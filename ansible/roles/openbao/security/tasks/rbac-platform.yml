@@ -1,0 +1,167 @@
+---
+# Platform RBAC — P1–P6 roller + policy'ler
+# Plan §2: "Platform katmanı — statik, elle gözden geçirilir, nadiren değişir"
+# root token'la çalışır, sonda P4 (ops-admin) bootstrap (secret-id → creds dosyası) yapar.
+# Konum: openbao/security/tasks/ (OpenBao sunucu tarafı, bootstrap sırasında çalışır)
+
+# ============================================
+# Platform policy'leri (P1 pki-signer, P2 pki-manager, P3 monitor, P4 ops-admin)
+# ============================================
+
+- name: Create platform RBAC policies
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/sys/policies/acl/{{ item.name }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      policy: |
+        {% for p in item.paths %}
+        path "{{ p.path }}" {
+          capabilities = {{ p.caps | to_json }}
+        {% for key, val in (p.denied_parameters | default({})).items() %}
+          denied_parameters {
+            {{ key }} = {{ val | to_json }}
+          }
+        {% endfor %}
+        }
+        {% endfor %}
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+  loop: "{{ openbao_platform_policies }}"
+  changed_when: true
+
+# ============================================
+# Platform rolleri (P1–P6)
+# ============================================
+
+- name: Create platform AppRole roles
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/auth/{{ openbao_approle_mount }}/role/{{ item.role_name }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      token_policies: "{{ item.token_policies }}"
+      token_ttl: "{{ item.token_ttl }}"
+      token_max_ttl: "{{ item.token_max_ttl }}"
+      token_num_uses: "{{ item.token_num_uses | default(0) }}"
+      token_type: "{{ item.token_type | default('service') }}"
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+  loop: "{{ openbao_platform_roles }}"
+  changed_when: true
+
+# ============================================
+# P4 (ops-admin) extra parametreleri (no_default_policy + token_bound_cidrs)
+# Ana role creation'da bu parametreler desteklenmez, ayrı POST gerekir.
+# ============================================
+
+- name: Apply P4 ops-admin extra parameters
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/auth/{{ openbao_approle_mount }}/role/ops-admin"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      token_policies: "{{ openbao_platform_roles | selectattr('role_name', 'equalto', 'ops-admin') | map(attribute='token_policies') | first }}"
+      token_ttl: "{{ openbao_platform_roles | selectattr('role_name', 'equalto', 'ops-admin') | map(attribute='token_ttl') | first }}"
+      token_max_ttl: "{{ openbao_platform_roles | selectattr('role_name', 'equalto', 'ops-admin') | map(attribute='token_max_ttl') | first }}"
+      token_num_uses: 0
+      token_type: service
+      token_bound_cidrs: "{{ openbao.rbac.ops_admin_cidrs | default([]) }}"
+      token_no_default_policy: true
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+  changed_when: true
+
+# ============================================
+# Platform credential'ları — tek data-driven loop.
+# Sabit liste: openbao_platform_credentials (defaults) + isteğe bağlı
+# openbao.credential_produce_list (all.yml). Yalnızca role GET 404'e izin verilmez
+# — listedeki her isim tanımlı bir role olmalı (önce openbao_platform_roles'a eklenir).
+# ============================================
+
+- name: Resolve platform credential list (fixed + optional)
+  ansible.builtin.set_fact:
+    _cred_list: "{{ openbao_platform_credentials + (openbao.credential_produce_list | default([])) | unique }}"
+  changed_when: false
+
+- name: Get platform role_id (data-driven)
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/auth/{{ openbao_approle_mount }}/role/{{ item }}/role-id"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    validate_certs: false
+    status_code: 200
+  register: _cred_role_ids
+  loop: "{{ _cred_list }}"
+  loop_control:
+    label: "{{ item }}"
+  changed_when: false
+
+- name: Generate platform secret_id (data-driven)
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/auth/{{ openbao_approle_mount }}/role/{{ item }}/secret-id"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body: {}
+    body_format: json
+    validate_certs: false
+    status_code: 200
+  register: _cred_secret_ids
+  loop: "{{ _cred_list }}"
+  loop_control:
+    label: "{{ item }}"
+  changed_when: false
+
+- name: Store platform credentials locally (data-driven)
+  ansible.builtin.copy:
+    content: |
+      {
+        "role_id": "{{ _cred_role_ids.results | selectattr('item', 'equalto', item) | map(attribute='json.data.role_id') | first | default('') }}",
+        "secret_id": "{{ _cred_secret_ids.results | selectattr('item', 'equalto', item) | map(attribute='json.data.secret_id') | first | default('') }}"
+      }
+    dest: "{{ playbook_dir }}/../outputs/openbao/{{ item }}.json"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  no_log: true
+  loop: "{{ _cred_list }}"
+  loop_control:
+    label: "{{ item }}"
+
+# ============================================
+# Root token'ı emekli et — bundan sonra hiçbir playbook root kullanmaz
+# Root dosyada (openbao-credentials.yml) kalır, break-glass olarak.
+# ============================================
+
+- name: Load ops-admin credentials (for token switch — data-driven loop output)
+  ansible.builtin.slurp:
+    src: "{{ playbook_dir }}/../outputs/openbao/ops-admin.json"
+  register: _ops_admin_creds_boot
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Switch bao_token to ops-admin (bootstrap login)
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/auth/{{ openbao_approle_mount }}/login"
+    method: POST
+    body:
+      role_id: "{{ (_ops_admin_creds_boot.content | b64decode | from_json).role_id }}"
+      secret_id: "{{ (_ops_admin_creds_boot.content | b64decode | from_json).secret_id }}"
+    body_format: json
+    validate_certs: false
+    status_code: 200
+  register: _p11_login
+
+- name: Set bao_token to ops-admin
+  ansible.builtin.set_fact:
+    bao_token: "{{ _p11_login.json.auth.client_token }}"
+  no_log: true

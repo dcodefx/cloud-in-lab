@@ -1,0 +1,12 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: "restrict-{{ policy_ns_target }}-ingress"
+  namespace: "{{ policy_ns_target }}"
+spec:
+  description: "{{ policy_ns_target }} namespace'ine sadece {{ policy_ns_source }} namespace'inden giris izni verir"
+  endpointSelector: {}
+  ingress:
+  - fromEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: "{{ policy_ns_source }}"

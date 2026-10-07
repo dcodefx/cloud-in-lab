@@ -1,0 +1,41 @@
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: allow-webhook-ingress
+spec:
+  description: "kube-apiserver (ve node-yerel) -> cert-manager-webhook pod'lari :10250 (HTTPS admission)"
+  endpointSelector:
+    matchLabels:
+      k8s:app.kubernetes.io/component: webhook
+  ingress:
+  - fromEntities:
+    - kube-apiserver
+    - host
+    - remote-node
+    toPorts:
+    - ports:
+      - port: "10250"
+        protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: allow-cilium-webhook-ingress
+spec:
+  description: "kube-apiserver -> Cilium agent/operator webhook :9443 (self-hosted webhook korumasi)"
+  endpointSelector:
+    matchExpressions:
+    - key: k8s:app.kubernetes.io/name
+      operator: In
+      values:
+      - cilium
+      - cilium-operator
+  ingress:
+  - fromEntities:
+    - kube-apiserver
+    - host
+    - remote-node
+    toPorts:
+    - ports:
+      - port: "9443"
+        protocol: TCP

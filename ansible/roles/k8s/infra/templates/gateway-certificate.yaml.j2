@@ -1,0 +1,20 @@
+apiVersion: cert-manager.io/v1
+{% set gateway_cert = k8s_cluster.gateway_cert | default(gateway_cert, true) %}
+kind: Certificate
+metadata:
+  name: gateway-tls
+  namespace: kube-system
+spec:
+  secretName: gateway-tls
+  duration: {{ gateway_cert.duration }}
+  renewBefore: {{ gateway_cert.renew_before }}
+  dnsNames:
+{% for domain in gateway_cert.domains %}
+    - "{{ domain }}"
+{% endfor %}
+  privateKey:
+    algorithm: {{ gateway_cert.key_algorithm }}
+    size: {{ gateway_cert.key_size }}
+  issuerRef:
+    name: openbao-pki
+    kind: ClusterIssuer

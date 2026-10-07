@@ -1,0 +1,8 @@
+---
+# Cilium L2 Announcement interface — gerçek değer inventory'den (k8s_cluster.l2_interface) gelir;
+# burası yalnızca fallback'tir.
+cilium_l2_interface: "{{ k8s_cluster.l2_interface | default('eth0') }}"
+
+# Shared Gateway HTTPS listener hostname — gateway-tls sertifikasıyla (k8s_cluster.gateway_cert.domains)
+# senkron kalmalı; gerçek değer inventory'den gelir, burası yalnızca fallback'tir.
+gateway_tls_hostname: "{{ k8s_cluster.gateway_cert.domains[0] | default('*.' + base_domain) }}"

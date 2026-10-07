@@ -1,0 +1,38 @@
+# External node-exporter Service + Endpoints — GENERATED, DO NOT EDIT.
+# Owner: roles/maintenance -> monitoring.yml (kubectl apply, k8s-master-1).
+# Targets are derived from the inventory (m_external_exporter_ips = the
+# ansible_host values of the garage-backup + openbao groups) — no file/ini parsing.
+# The Service has no selector (no pod) -> Endpoints are written by hand; with an
+# empty jobLabel the job falls back to the Service name (operator docs) -> up{job="external-node-exporter"}.
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-node-exporter
+  namespace: "{{ maintenance_prom_namespace }}"
+  labels:
+    app.kubernetes.io/name: external-node-exporter
+    app.kubernetes.io/managed-by: maintenance
+spec:
+  clusterIP: None
+  ports:
+    - name: http-metrics
+      port: {{ maintenance.backup.node_exporter_listen | regex_replace('^:', '') }}
+      protocol: TCP
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: external-node-exporter
+  namespace: "{{ maintenance_prom_namespace }}"
+  labels:
+    app.kubernetes.io/name: external-node-exporter
+    app.kubernetes.io/managed-by: maintenance
+subsets:
+  - addresses:
+{% for ip in m_external_exporter_ips %}
+      - ip: {{ ip }}
+{% endfor %}
+    ports:
+      - name: http-metrics
+        port: {{ maintenance.backup.node_exporter_listen | regex_replace('^:', '') }}
+        protocol: TCP

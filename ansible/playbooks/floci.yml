@@ -1,0 +1,18 @@
+---
+- import_playbook: pre/connect.yml
+
+- name: Deploy Floci server
+  hosts: floci
+  become: true
+  tasks:
+    - name: Install Docker
+      ansible.builtin.include_role:
+        name: ../roles/docker
+      tags: ['docker']
+      when: floci.enable | default(false) | bool
+
+    - name: Install Floci
+      ansible.builtin.include_role:
+        name: ../roles/floci
+      tags: ['floci']
+      when: floci.enable | default(false) | bool

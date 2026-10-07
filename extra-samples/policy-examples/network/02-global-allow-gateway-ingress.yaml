@@ -1,0 +1,39 @@
+---
+# ============================================
+# Policy: global-allow-gateway-ingress
+# Tür: CiliumClusterwideNetworkPolicy
+# Katman: Güvenlik / Ağ (Network Policy)
+# ============================================
+# Ne işe yarar:
+#   Cilium Gateway (Envoy proxy) üzerinden gelen trafiğin
+#   sadece "ingress-exposed: true" etiketine sahip pod'lara
+#   girmesine izin verir.
+#
+# fromEntities: [ingress] nedir?
+#   - ingress = reserved:ingress identity'si (Cilium'un
+#     Gateway API proxy'sine atadığı özel kimlik)
+#   - Cilium'da identity 8'e karşılık gelir
+#   - Bu identity'i sadece Gateway/Ingress proxy'si taşır
+#
+# endpointSelector: matchLabels: ingress-exposed: "true"
+#   - Sadece bu etikete sahip pod'lar kapsanır
+#   - Etiketsiz pod'lar bu policy'den faydalanamaz
+#   - Yani dış dünyaya kapalı kalırlar
+#
+# Kullanım:
+#   Web'den erişilmesi gereken her pod'a
+#   "ingress-exposed: true" label'ı eklenir.
+# ============================================
+
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: global-allow-gateway-ingress
+spec:
+  description: "Gateway Proxy'den ingress-exposed etiketli pod'lara L7 geçişi sağlar"
+  endpointSelector:
+    matchLabels:
+      ingress-exposed: "true"
+  ingress:
+  - fromEntities:
+    - ingress

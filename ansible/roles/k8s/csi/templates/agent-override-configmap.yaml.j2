@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openbao-csi-agent-override
+  namespace: kube-system
+data:
+  override.hcl: |
+    vault {
+      address = "{{ openbao_address }}"
+      ca_cert = "/vault/ca/ca.crt"
+    }

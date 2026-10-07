@@ -1,0 +1,16 @@
+---
+
+# Cilium
+cilium_version: "1.20.1"
+cilium_cli_version: "0.19.7"
+cilium_cli_checksum: "sha256:cd15e0983bf0acc7946cd05d453d1e58376ea92dec2642e745212df2b07d8852"
+
+# Gateway API
+gateway_api_version: "1.6.1"
+
+# Helm
+helm_version: "4.2.4"
+helm_checksum: "sha256:c306b46f719b0a4da32d0f78ee21bf90ce8d602f15b22ab753f0674d1670a7f3"
+
+# Acik sekilde tetiklenmedikce saglikli cluster'a kubeadm reset yapilmaz
+force_reset: false

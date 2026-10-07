@@ -1,0 +1,16 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-gateway-egress-{{ name }}
+  namespace: {{ namespace }}
+  labels:
+    app.kubernetes.io/managed-by: app-deploy
+    app.kubernetes.io/name: {{ name }}
+spec:
+  description: "Gateway'den {{ name }} pod'larina egress izni"
+  endpointSelector:
+    matchLabels:
+      k8s:app: {{ name }}
+  ingress:
+    - fromEntities:
+        - ingress

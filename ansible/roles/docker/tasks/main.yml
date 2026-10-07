@@ -1,0 +1,120 @@
+---
+- name: (APT) Remove conflicting old packages
+  ansible.builtin.apt:
+    name:
+      - docker
+      - docker-engine
+      - docker.io
+      - containerd
+      - runc
+    state: absent
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: (APT) Install prerequisite packages
+  ansible.builtin.apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+    state: present
+    update_cache: true
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: (APT) Create apt keyrings directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: (APT) Add Docker GPG key (ASCII armor)
+  ansible.builtin.get_url:
+    url: "https://download.docker.com/linux/{{ ansible_facts['distribution'] | lower }}/gpg"
+    dest: /etc/apt/keyrings/docker.asc
+    mode: "0644"
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: (APT) Add Docker repository (deb822)
+  ansible.builtin.deb822_repository:
+    name: docker
+    types: [deb]
+    uris: "https://download.docker.com/linux/{{ ansible_facts['distribution'] | lower }}"
+    suites: "{{ ansible_facts['distribution_release'] }}"
+    components: [stable]
+    signed_by: /etc/apt/keyrings/docker.asc
+    state: present
+    install_python_debian: true
+  register: docker_repo_result
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: (APT) Refresh apt cache (if repo changed)
+  ansible.builtin.apt:
+    update_cache: true
+  when:
+    - ansible_facts['os_family'] == "Debian"
+    - docker_repo_result is changed
+
+- name: (APT) Install Docker packages
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+    state: present
+    update_cache: true
+  when: ansible_facts['os_family'] == "Debian"
+  notify: Restart Docker
+
+- name: (DNF) Remove conflicting old packages
+  ansible.builtin.dnf:
+    name:
+      - docker
+      - docker-client
+      - docker-client-latest
+      - docker-common
+      - docker-latest
+      - docker-latest-logrotate
+      - docker-logrotate
+      - docker-engine
+    state: absent
+  when: ansible_facts['os_family'] == "RedHat"
+
+- name: (DNF) Install dnf-plugins-core package
+  ansible.builtin.dnf:
+    name: dnf-plugins-core
+    state: present
+  when: ansible_facts['os_family'] == "RedHat"
+
+- name: (DNF) Add Docker repository
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/centos/docker-ce.repo
+    dest: /etc/yum.repos.d/docker-ce.repo
+    mode: "0644"
+  when: ansible_facts['os_family'] == "RedHat"
+
+- name: (DNF) Install Docker packages
+  ansible.builtin.dnf:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+    state: present
+  when: ansible_facts['os_family'] == "RedHat"
+  notify: Restart Docker
+
+- name: Add user to docker group
+  ansible.builtin.user:
+    name: "{{ ansible_user }}"
+    groups: docker
+    append: true
+
+- name: Start Docker service and enable at boot
+  ansible.builtin.systemd:
+    name: docker
+    state: started
+    enabled: true
+    daemon_reload: true

@@ -1,0 +1,21 @@
+# W7 kv-owner: B0+self-care + B3+kv-own-lifecycle (kendi prefix'inin tam sahibi)
+# Token renewable=true, 1h/8h. KV full lifecycle (delete/undelete/destroy).
+
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}
+path "secret/data/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}/*" {
+  capabilities = ["create", "read", "update", "patch", "delete"]
+}
+path "secret/metadata/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}/*" {
+  capabilities = ["list", "read", "delete"]
+}
+path "secret/undelete/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}/*" {
+  capabilities = ["update"]
+}
+path "secret/destroy/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}/*" {
+  capabilities = ["update"]
+}

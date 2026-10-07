@@ -1,0 +1,26 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: "allow-fqdn-egress-{{ policy_fqdn_name }}"
+  namespace: "{{ policy_fqdn_namespace }}"
+spec:
+  description: "{{ policy_fqdn_description }}"
+  endpointSelector:
+    matchLabels:
+{% for k, v in policy_fqdn_selector.items() %}
+      {{ k }}: {{ v }}
+{% endfor %}
+  egress:
+  - toFQDNs:
+{% for fqdn in policy_fqdn_match_names %}
+    - matchName: "{{ fqdn }}"
+{% endfor %}
+{% for pattern in policy_fqdn_match_patterns %}
+    - matchPattern: "{{ pattern }}"
+{% endfor %}
+    toPorts:
+    - ports:
+{% for port in policy_fqdn_ports | default(['443']) %}
+      - port: "{{ port }}"
+        protocol: TCP
+{% endfor %}

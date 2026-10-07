@@ -1,0 +1,13 @@
+# W2 metrics-reader: sys/health + sys/metrics read + self-care
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}
+path "sys/health" {
+  capabilities = ["read"]
+}
+path "sys/metrics" {
+  capabilities = ["read", "list"]
+}

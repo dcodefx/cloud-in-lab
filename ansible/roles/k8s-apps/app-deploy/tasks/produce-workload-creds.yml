@@ -1,0 +1,59 @@
+---
+# produce-workload-creds.yml — K8s apps tarafı
+# ---------------------------------------------------------------------------
+# Her app deploy'da çalışır. Credential üretir (secret_id) + outputs'a yazar.
+# Token: ops-admin (openbao-ops/tasks/main.yml'de set edilir)
+#
+# Girdi (çağıran taraf verir):
+#   _profile      — ör. "transit-user"
+#   _scope        — ör. "transit-demo"
+#
+# Çıktı (dosya):
+#   outputs/openbao/{scope}-approle.json → {role_id, secret_id}
+# ---------------------------------------------------------------------------
+
+- name: "Read role_id from static file (fixed, one per profile)"
+  ansible.builtin.set_fact:
+    _cred_role_id: "{{ (lookup('file', playbook_dir + '/../outputs/openbao/profile-role-ids.json') | from_json)[_profile] }}"
+
+- name: "Generate secret_id — profile: {{ _profile }}, scope: {{ _scope }}"
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/auth/{{ openbao_approle_mount }}/role/{{ _profile }}/secret-id"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      metadata: "{{ {'scope': _scope} | to_json }}"
+    body_format: json
+    validate_certs: false
+    status_code: 200
+  register: _secret_id_result
+  no_log: true
+
+- name: "Write credentials to outputs (local)"
+  ansible.builtin.copy:
+    content: |
+      {
+        "role_id": "{{ _cred_role_id }}",
+        "secret_id": "{{ _secret_id_result.json.data.secret_id }}"
+      }
+    dest: "{{ playbook_dir }}/../outputs/openbao/{{ _scope }}-approle.json"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: "Write credentials to OpenBao KV — {{ _scope }}-approle"
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/{{ openbao_kv_mount }}/data/{{ _scope }}-approle"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      data:
+        role_id: "{{ _cred_role_id }}"
+        secret_id: "{{ _secret_id_result.json.data.secret_id }}"
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+  no_log: true

@@ -1,0 +1,30 @@
+---
+# ============================================
+# Policy: global-default-deny-all
+# Tür: CiliumClusterwideNetworkPolicy
+# Katman: Güvenlik / Ağ (Network Policy)
+# ============================================
+# Ne işe yarar:
+#   Cluster'daki TÜM pod'ların ingress ve egress trafiğini
+#   varsayılan olarak kilitler. endpointSelector: {} boş olduğu
+#   için hiçbir pod bu policy'nin dışında kalamaz.
+#
+# ingress: [] ve egress: [] boş listeler olduğu için
+#   hiçbir trafik türüne izin verilmez.
+#
+# Uyarı:
+#   Bu policy tek başına uygulanırsa DNS dahil her şey kırılır.
+#   01-global-allow-dns.yaml ile birlikte uygulanmalıdır.
+# ============================================
+
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: global-default-deny-all
+spec:
+  description: >
+    Cluster genelinde tüm Ingress ve Egress trafiğini
+    varsayılan olarak kilitler.
+  endpointSelector: {}
+  ingress: []
+  egress: []

@@ -1,0 +1,70 @@
+---
+- name: Check if already part of cluster
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: _kubelet_conf
+
+- name: Ensure master produced discovery file (run k8s.yml master first)
+  ansible.builtin.stat:
+    path: /tmp/discovery.kubeconfig
+  register: _discovery_present
+  delegate_to: "{{ groups['k8s_master'][0] }}"
+  when: not _kubelet_conf.stat.exists
+
+- name: Fail if discovery file missing
+  ansible.builtin.fail:
+    msg: >-
+      Master node /tmp/discovery.kubeconfig bulunamadi.
+      Once 'ansible-playbook playbooks/k8s.yml' (master rolü) calistirin.
+  when:
+    - not _kubelet_conf.stat.exists
+    - not _discovery_present.stat.exists | default(false)
+
+- name: Read discovery file from master
+  ansible.builtin.slurp:
+    src: /tmp/discovery.kubeconfig
+  register: _discovery_file
+  delegate_to: "{{ groups['k8s_master'][0] }}"
+  no_log: true
+  when: not _kubelet_conf.stat.exists
+
+- name: Write discovery file locally
+  ansible.builtin.copy:
+    content: "{{ _discovery_file.content | b64decode }}"
+    dest: /tmp/discovery.kubeconfig
+    mode: "0600"
+  no_log: true
+  when:
+    - not _kubelet_conf.stat.exists
+    - _discovery_file.content is defined
+
+- name: Join cluster (discovery-file, no anonymous auth needed)
+  ansible.builtin.command:
+    cmd: kubeadm join --discovery-file /tmp/discovery.kubeconfig
+  when:
+    - not _kubelet_conf.stat.exists
+    - _discovery_file.content is defined
+  register: _join_result
+  changed_when: _join_result.rc == 0
+
+- name: Clean up temporary discovery file (contains short-lived token)
+  ansible.builtin.file:
+    path: /tmp/discovery.kubeconfig
+    state: absent
+  when: _join_result is defined and _join_result is succeeded
+
+- name: Enable and start kubelet
+  ansible.builtin.systemd:
+    name: kubelet
+    state: started
+    enabled: true
+
+- name: Remove master join artifacts (short-lived token)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/discovery.kubeconfig
+  delegate_to: "{{ groups['k8s_master'][0] }}"
+  run_once: true
+  changed_when: false

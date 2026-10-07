@@ -1,0 +1,59 @@
+---
+openbao_version: "2.6.2"
+
+openbao_arch: "linux_amd64"
+openbao_archive: "openbao_{{ openbao_version }}_{{ openbao_arch }}.tar.gz"
+
+openbao_download_base: "https://github.com/openbao/openbao/releases/download/v{{ openbao_version }}"
+openbao_binary_url: "{{ openbao_download_base }}/{{ openbao_archive }}"
+openbao_checksums_url: "{{ openbao_download_base }}/checksums.txt"
+
+openbao_user: bao
+openbao_group: bao
+
+openbao_home: /var/lib/bao
+openbao_config_dir: /etc/bao
+openbao_cert_dir: /etc/bao/certs
+openbao_bin: /usr/local/bin/bao
+
+openbao_port: "{{ openbao.port | default(8200) }}"
+openbao_cluster_port: "{{ openbao.cluster_port | default(8201) }}"
+
+openbao_tls_cert: "{{ openbao_cert_dir }}/cert.pem"
+openbao_tls_key: "{{ openbao_cert_dir }}/key.pem"
+
+openbao_api_addr: "https://{{ ansible_facts['default_ipv4']['address'] }}:{{ openbao_port }}"
+openbao_cluster_addr: "https://{{ ansible_facts['default_ipv4']['address'] }}:{{ openbao_cluster_port }}"
+
+openbao_storage_type: raft
+openbao_raft_path: "{{ openbao_home }}/raft"
+
+openbao_unseal_threshold: 3
+openbao_unseal_shares: 5
+
+openbao_ui_enabled: true
+
+# ── Raft yedekleme (backup.yml) ────────────────────────────────────────────
+# openbao_backup_enabled tek bayrak: eski root-cron katmanını da, yeni
+# bao-raft-agent katmanını da kapatır (tasks/main.yml bu bayrağa bağlı).
+openbao_backup_enabled: true
+#
+# ESKİ YEREL RAFT KATMANI — emekli (root-cron, tokensiz olduğu için çalışmıyordu).
+# Yerini openbao_raft_* bloğu aldı. Değişkenler geri alınabilirlik için duruyor;
+# hiçbir task artık okumuyor. Silmek istersen: aşağıdaki 4 değişken +
+# templates/bao-backup.sh.j2 + backup.yml'deki 3 task.
+#   openbao_backup_cron_minute / _hour / _dir / _retention_days
+#
+# ── YENİ: bao agent (AppRole auto_auth) + kalıcı yerel kopya ───────────────
+# Yerel kopya dizini raft veri dizininden (openbao_raft_path) BİLEREK AYRI:
+# aynı mount'ta tutmak find -mtime kapsamı ve "hangi dosya raft?" ayrımını
+# bulanıklaştırıyor. CM'de raft'a karışmayan ayrı bir kök tercih edildi.
+openbao_raft_snap_dir: /var/lib/bao-raft-snaps
+openbao_raft_snap_retention_days: 7
+# Tek kaynak: policy adı = rol adı = credential dosyası = unit/env parçası.
+openbao_raft_agent_role: bao-raft-agent
+openbao_raft_restore_role: bao-raft-restore
+openbao_raft_agent_sock: "{{ openbao_config_dir }}/agent.sock"
+# Resmi snapshot-agent doc'u uyarıyor: büyük veritabanlarında varsayılan 60s
+# "context deadline exceeded" verir. Raft'ımız küçük ama 5 dakika bedava.
+openbao_raft_agent_client_timeout: "300s"

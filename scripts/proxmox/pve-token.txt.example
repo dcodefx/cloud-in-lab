@@ -1,0 +1,5 @@
+# Proxmox VE 9 - Terraform/OpenTofu API Token
+# Olusturulma: 2026-10-04 17:33
+# Host: 164.102.98.16 | Kullanici: terraform-prov@pve | Rol: TerraformProv
+
+proxmox_token = "terraform-prov@pve!terraform=7d0cf6d3-41ba-424f-a0e3-a4ea892b6b3f"

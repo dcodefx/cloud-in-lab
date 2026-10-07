@@ -1,0 +1,27 @@
+# Örnek group_vars/all/all.yml içindeki openbao bloğu
+# Bu dosya sadece referans amaçlıdır. Mevcut ansible/inventory/group_vars/all/all.yml
+# dosyasına kopyalanmadan önce değişken isimleri projenize göre uyarlanmalıdır.
+
+openbao:
+  enable: true
+  version: "2.6.2"
+  ip: "164.102.98.186"
+  port: 8200
+  cluster_port: 8201
+  pki:
+    domain: "tofu.lan"
+    root_ca_ttl: "87600h"
+    int_ca_ttl: "43800h"
+    cert_ttl: "2160h"
+  # Auto-Unseal PKCS#11 / SoftHSM2 - opsiyonel
+  autounseal_enabled: false
+  plugin_dir: "/opt/openbao/plugins"
+  pkcs11_plugin_bin: "openbao-plugin-kms-pkcs11_linux_amd64_v1"
+  pkcs11_plugin_sha256: ""   # plugin binary'nin sha256'sı
+  softhsm_lib_path: "/usr/lib/softhsm/libsofthsm2.so"
+  softhsm_pin: ""   # Ansible Vault ile sakla
+  softhsm_so_pin: "" # İsteğe bağlı, boşsa softhsm_pin kullanılır
+  softhsm_token_label: "openbao"
+  softhsm_key_label: "aes-root"
+  softhsm_token_dir: "/var/lib/softhsm/tokens"
+  softhsm_group: "softhsm"

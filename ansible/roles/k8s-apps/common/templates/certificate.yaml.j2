@@ -1,0 +1,49 @@
+{%- set _domains = tls_domains | default(app.hostnames | default([name])) -%}
+{%- if _domains is string -%}
+  {%- set _domains = [_domains] -%}
+{%- endif -%}
+{%- set _fqdn_list = [] -%}
+{%- for d in _domains -%}
+  {%- if use_base_domain | default(true) | bool -%}
+    {%- set _ = _fqdn_list.append(d ~ '.' ~ base_domain) -%}
+  {%- else -%}
+    {%- set _ = _fqdn_list.append(d) -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- set _tls = app.tls | default({}) -%}
+{%- set _issuer_name = _tls.issuerName | default('') -%}
+{%- if _issuer_name == '' -%}
+  {%- if tls_mode | default('shared') == 'dedicated' and not (use_base_domain | default(true) | bool) -%}
+    {%- set _primary = _fqdn_list[0] if _fqdn_list else '' -%}
+    {%- set _domain = _primary | regex_replace('^[^.]+\\.', '') -%}
+    {%- set _issuer_name = 'openbao-pki-' ~ (_domain | replace('.', '-')) -%}
+  {%- else -%}
+    {%- set _issuer_name = 'openbao-pki' -%}
+  {%- endif -%}
+{%- endif -%}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ name }}-tls
+  namespace: {{ namespace }}
+  labels:
+    app.kubernetes.io/managed-by: app-deploy
+    app.kubernetes.io/name: {{ name }}
+spec:
+  secretName: {{ name }}-tls
+  secretTemplate:
+    labels:
+      app.kubernetes.io/managed-by: app-deploy
+      app.kubernetes.io/name: {{ name }}
+  duration: {{ _tls.duration | default('2160h') }}
+  renewBefore: {{ _tls.renewBefore | default('360h') }}
+  dnsNames:
+{% for fqdn in _fqdn_list %}
+    - "{{ fqdn }}"
+{% endfor %}
+  privateKey:
+    algorithm: {{ _tls.keyAlgorithm | default('ECDSA') }}
+    size: {{ _tls.keySize | default(384) }}
+  issuerRef:
+    name: {{ _issuer_name | default('openbao-pki') }}
+    kind: {{ _tls.issuerKind | default('ClusterIssuer') }}

@@ -1,0 +1,99 @@
+---
+# ── 1) Restic setup (pinned version + sha256) ────────────────────────────
+- name: Install bzip2 (bunzip2 — for archive extraction)
+  when: m_restic_jobs_local | length > 0
+  ansible.builtin.package:
+    name: bzip2
+    state: present
+
+- name: "Create restic install directory ({{ restic_bin | dirname }})"
+  when: m_restic_jobs_local | length > 0
+  ansible.builtin.file:
+    path: "{{ restic_bin | dirname }}"
+    state: directory
+    mode: "0755"
+
+# ── 1b) Version pre-check: skip download+install when already at pinned version
+- name: Check currently installed restic version
+  when: m_restic_jobs_local | length > 0
+  ansible.builtin.command: "{{ restic_bin }} version"
+  register: m_restic_installed_ver
+  changed_when: false
+  # failed_when: false — binary may not exist on first install; the install
+  # block's when condition handles both the "absent" and "wrong version" cases.
+  failed_when: false
+
+- name: Download and install restic (skipped when already at pinned version)
+  when: >-
+    m_restic_jobs_local | length > 0
+    and (m_restic_installed_ver.rc != 0
+         or restic_version not in (m_restic_installed_ver.stdout | default('')))
+  block:
+    - name: Download restic archive (sha256 verified)
+      ansible.builtin.get_url:
+        url: "https://github.com/restic/restic/releases/download/v{{ restic_version }}/restic_{{ restic_version }}_linux_{{ restic_arch_map[ansible_architecture] }}.bz2"
+        dest: "/tmp/restic_{{ restic_version }}.bz2"
+        checksum: "sha256:{{ restic_sha256 }}"
+        mode: "0644"
+
+    - name: Install restic binary (atomic — existing binary not corrupted on failure)
+      ansible.builtin.command:
+        argv:
+          - /bin/bash
+          - -c
+          - >-
+            bunzip2 -c /tmp/restic_{{ restic_version }}.bz2 > {{ restic_bin }}.tmp
+            && chmod 0755 {{ restic_bin }}.tmp
+            && mv -f {{ restic_bin }}.tmp {{ restic_bin }}
+      changed_when: true
+
+  always:
+    # Temp files are removed whether install succeeds or fails.
+    # state: absent is a no-op for files that do not exist.
+    - name: "Clean up temp files (bz2 + partial binary)"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/tmp/restic_{{ restic_version }}.bz2"
+        - "{{ restic_bin }}.tmp"
+
+- name: Verify restic version
+  when: m_restic_jobs_local | length > 0
+  ansible.builtin.command: "{{ restic_bin }} version"
+  changed_when: false
+  register: m_restic_ver
+  failed_when: m_restic_ver.stdout is not search(restic_version)
+
+# ── 4) Restic password files (0600, no vault — convention: outputs/) ─────
+# Presence check first (openbao init.yml stat→fail pattern) — the role reads
+# these from the controller; missing files must stop with a clear instruction.
+- name: "Check restic password files (controller)"
+  when: m_restic_jobs_local | length > 0
+  ansible.builtin.stat:
+    path: "{{ m_garage_out_dir }}/restic-{{ item.key }}.pw"
+  delegate_to: localhost
+  become: false
+  loop: "{{ m_restic_jobs_local }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: m_pw_stat
+
+- name: "Restic pw files MISSING — stop (run gen-restic-passwords.sh first)"
+  ansible.builtin.fail:
+    msg: >-
+      Missing on controller: {{ m_pw_stat.results | rejectattr('stat.exists') | list | map(attribute='item.key') | join(', ') }}
+      → {{ m_garage_out_dir }}/restic-<job>.pw
+      Run chef.sh first (it generates the passwords; README §Kurulum)
+  when: >-
+    m_restic_jobs_local | length > 0
+    and (m_pw_stat.results | rejectattr('stat.exists') | list | length > 0)
+
+- name: Distribute restic repo passwords (0600)
+  when: m_restic_jobs_local | length > 0
+  ansible.builtin.copy:
+    content: "{{ lookup('ansible.builtin.file', m_garage_out_dir ~ '/restic-' ~ item.key ~ '.pw') }}"
+    dest: "{{ m_conf }}/restic/{{ item.key }}.pw"
+    mode: "0600"
+  loop: "{{ m_restic_jobs_local }}"
+  no_log: true

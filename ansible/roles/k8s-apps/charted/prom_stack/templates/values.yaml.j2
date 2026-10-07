@@ -1,0 +1,57 @@
+nameOverride: "{{ chart_cfg.release_name }}"
+
+# etcd metrics not available in standard kubeadm (no --listen-metrics-urls)
+kubeEtcd:
+  serviceMonitor:
+    enabled: false
+
+prometheus:
+  prometheusSpec:
+    name: "{{ chart_cfg.release_name }}-prometheus"
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+    podMetadata:
+      labels:
+        ingress-exposed: "true"
+# Backup metrik scrape burada DEGIL — dis hedefler (garage/openbao) icin
+# Service/Endpoints/ServiceMonitor + egress CNP'yi maintenance rolueri
+# uygular (roles/maintenance → monitoring.yml, envanterden uretilir).
+
+grafana:
+  enabled: {{ chart_cfg.grafana.enabled }}
+  name: "{{ chart_cfg.release_name }}-grafana"
+  adminPassword: "{{ chart_cfg.grafana.admin_password | default('') }}"
+  service:
+    port: {{ chart_cfg.grafana.port }}
+  ingress:
+    enabled: false
+  podLabels:
+    ingress-exposed: "true"
+
+alertmanager:
+  enabled: {{ chart_cfg.alertmanager.enabled }}
+  alertmanagerSpec:
+    name: "{{ chart_cfg.release_name }}-alertmanager"
+    podMetadata:
+      labels:
+        ingress-exposed: "true"
+# K8s masters also expose backup metrics: textfile hostPath mount (m_metrics).
+# Kosulsuz — master'daki backup job'lari her kosulda .prom yazar; mount
+# kapanirsa etcd/key alert'leri korlesir. (Surum: maintenance.project_name.)
+prometheus-node-exporter:
+  extraArgs:
+    - --collector.textfile.directory=/var/lib/node_exporter/textfile_collector
+  extraHostVolumeMounts:
+    - name: backup-metrics
+      hostPath: /var/lib/{{ maintenance.project_name }}/backup-metrics
+      type: DirectoryOrCreate
+      mountPath: /var/lib/node_exporter/textfile_collector
+      readOnly: true
+
+# Passthrough — chart-native ek değerler (örn. storageSpec, resources) şablon
+# değişmeden helm_values altına yazılır. Bilinmeyen key Helm tarafından
+# sessizce yutulur, şemayı `helm show values` ile doğrula.
+{% if chart_cfg.helm_values | default({}) | length > 0 %}
+{{ chart_cfg.helm_values | to_nice_yaml }}
+{% endif %}

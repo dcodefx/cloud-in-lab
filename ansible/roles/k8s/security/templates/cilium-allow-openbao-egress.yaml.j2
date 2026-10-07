@@ -1,0 +1,16 @@
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: allow-openbao-egress-by-label
+spec:
+  description: "homelab.io/allow-openbao-egress etiketli pod'lar -> OpenBao LXC egress (self-service)"
+  endpointSelector:
+    matchLabels:
+      k8s:homelab.io/allow-openbao-egress: "true"
+  egress:
+  - toCIDR:
+    - "{{ openbao_host }}/32"
+    toPorts:
+    - ports:
+      - port: "8200"
+        protocol: TCP

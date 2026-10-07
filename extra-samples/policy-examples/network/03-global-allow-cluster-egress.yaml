@@ -1,0 +1,38 @@
+---
+# ============================================
+# Policy: global-allow-cluster-egress
+# Tür: CiliumClusterwideNetworkPolicy
+# Katman: Güvenlik / Ağ (Network Policy)
+# ============================================
+# Ne işe yarar:
+#   Seçili pod'ların cluster içindeki TÜM endpoint'lere
+#   egress (çıkış) yapmasına izin verir.
+#
+# Kullanım senaryosu:
+#   Prometheus cluster genelinde metrik toplamak için
+#   tüm namespace'lerdeki pod'lara ulaşmalıdır.
+#   Bu policy ile Prometheus pod'una prometheus-scrape: "true"
+#   label'ı eklenir, cluster genelinde scrape yapabilir.
+#
+# toEntities: [cluster] nedir?
+#   - cluster = Cilium'un özel entity'si
+#   - Cluster içindeki tüm pod'ları, host'ları ve
+#     remote-node'ları kapsar
+#   - Dış dünyayı (world) kapsamaz
+#
+# Daha dar kısıtlama için toEntities yerine
+# toEndpoints + matchLabels kullanılabilir.
+# ============================================
+
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: global-allow-cluster-egress
+spec:
+  description: "Seçili pod'larin cluster içindeki tüm endpoint'lere egress yapmasina izin verir"
+  endpointSelector:
+    matchLabels:
+      prometheus-scrape: "true"
+  egress:
+  - toEntities:
+    - cluster

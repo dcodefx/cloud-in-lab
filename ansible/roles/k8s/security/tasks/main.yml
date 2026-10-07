@@ -1,0 +1,227 @@
+---
+- name: Ensure OpenBao facts (openbao_host/address for CIDR policy)
+  ansible.builtin.include_tasks: ../../../k8s/openbao-ops/tasks/ensure_ready.yml
+
+- name: Render RBAC ClusterRoles
+  ansible.builtin.template:
+    src: cluster-roles.yaml.j2
+    dest: /tmp/k8s-cluster-roles.yaml
+    mode: "0644"
+
+- name: Apply RBAC ClusterRoles
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/k8s-cluster-roles.yaml
+  changed_when: false
+
+- name: Render Cilium webhook ingress policy
+  ansible.builtin.template:
+    src: cilium-allow-webhook.yaml.j2
+    dest: /tmp/cilium-allow-webhook.yaml
+    mode: "0644"
+
+- name: Apply CiliumClusterwideNetworkPolicy allow-webhook-ingress
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/cilium-allow-webhook.yaml
+  changed_when: false
+
+- name: Render Cilium apiserver egress policy (ns baseline + intent label)
+  ansible.builtin.template:
+    src: cilium-allow-apiserver-egress.yaml.j2
+    dest: /tmp/cilium-allow-apiserver-egress.yaml
+    mode: "0644"
+
+- name: Apply CiliumClusterwideNetworkPolicy allow-apiserver-egress
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/cilium-allow-apiserver-egress.yaml
+  changed_when: false
+
+- name: Render Cilium prometheus-scrape ingress policy
+  ansible.builtin.template:
+    src: cilium-allow-prometheus-scrape.yaml.j2
+    dest: /tmp/cilium-allow-prometheus-scrape.yaml
+    mode: "0644"
+
+- name: Apply CiliumClusterwideNetworkPolicy allow-prometheus-scrape
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/cilium-allow-prometheus-scrape.yaml
+  changed_when: false
+
+- name: Render Cilium metrics-server kubelet egress policy
+  ansible.builtin.template:
+    src: cilium-allow-metrics-server.yaml.j2
+    dest: /tmp/cilium-allow-metrics-server.yaml
+    mode: "0644"
+
+- name: Apply CiliumClusterwideNetworkPolicy allow-metrics-server
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/cilium-allow-metrics-server.yaml
+  changed_when: false
+
+- name: Render Cilium health checker policy
+  ansible.builtin.template:
+    src: cilium-allow-health-checks.yaml.j2
+    dest: /tmp/cilium-allow-health-checks.yaml
+    mode: "0644"
+
+- name: Apply CiliumClusterwideNetworkPolicy allow-cilium-health
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/cilium-allow-health-checks.yaml
+  changed_when: false
+
+- name: Render Cilium allow-dns policy
+  ansible.builtin.template:
+    src: cilium-allow-dns.yaml.j2
+    dest: /tmp/cilium-allow-dns.yaml
+    mode: "0644"
+
+- name: Apply CiliumClusterwideNetworkPolicy allow-dns
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/cilium-allow-dns.yaml
+  changed_when: false
+
+- name: Render Cilium allow-gateway-world-ingress policy (Envoy listener 80/443)
+  ansible.builtin.template:
+    src: cilium-allow-gateway-world-ingress.yaml.j2
+    dest: /tmp/cilium-allow-gateway-world-ingress.yaml
+    mode: "0644"
+
+- name: Apply CiliumClusterwideNetworkPolicy allow-gateway-world-ingress
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/cilium-allow-gateway-world-ingress.yaml
+  changed_when: false
+
+- name: Render Cilium allow-gateway-ingress policy
+  ansible.builtin.template:
+    src: cilium-allow-gateway-ingress.yaml.j2
+    dest: /tmp/cilium-allow-gateway-ingress.yaml
+    mode: "0644"
+
+- name: Apply CiliumClusterwideNetworkPolicy allow-gateway-ingress
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/cilium-allow-gateway-ingress.yaml
+  changed_when: false
+
+- name: Render Cilium allow-gateway-egress policy
+  ansible.builtin.template:
+    src: cilium-allow-gateway-egress.yaml.j2
+    dest: /tmp/cilium-allow-gateway-egress.yaml
+    mode: "0644"
+
+- name: Apply CiliumClusterwideNetworkPolicy allow-gateway-egress
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/cilium-allow-gateway-egress.yaml
+  changed_when: false
+
+- name: Render Cilium allow-hubble policy
+  ansible.builtin.template:
+    src: cilium-allow-hubble.yaml.j2
+    dest: /tmp/cilium-allow-hubble.yaml
+    mode: "0644"
+
+- name: Apply CiliumClusterwideNetworkPolicy allow-hubble
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/cilium-allow-hubble.yaml
+  changed_when: false
+
+- name: Render Cilium CIDR egress policy
+  ansible.builtin.template:
+    src: cilium-allow-cidr-egress.yaml.j2
+    dest: /tmp/cilium-allow-cidr-egress.yaml
+    mode: "0644"
+  when: enable_policy_cidr_egress
+
+- name: Apply CiliumClusterwideNetworkPolicy CIDR egress
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/cilium-allow-cidr-egress.yaml
+  changed_when: false
+  when: enable_policy_cidr_egress
+
+- name: Render Cilium namespace isolation policy
+  ansible.builtin.template:
+    src: cilium-ns-isolation.yaml.j2
+    dest: /tmp/cilium-ns-isolation.yaml
+    mode: "0644"
+  when: enable_policy_ns_isolation
+
+- name: Apply CiliumNetworkPolicy namespace isolation
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/cilium-ns-isolation.yaml
+  changed_when: false
+  when: enable_policy_ns_isolation
+
+- name: Render Cilium FQDN egress policy
+  ansible.builtin.template:
+    src: cilium-allow-fqdn-egress.yaml.j2
+    dest: /tmp/cilium-allow-fqdn-egress.yaml
+    mode: "0644"
+  when: enable_policy_fqdn_egress
+
+- name: Apply CiliumNetworkPolicy FQDN egress
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/cilium-allow-fqdn-egress.yaml
+  changed_when: false
+  when: enable_policy_fqdn_egress
+
+- name: Render Cilium OpenBao egress policy (self-service label)
+  ansible.builtin.template:
+    src: cilium-allow-openbao-egress.yaml.j2
+    dest: /tmp/cilium-allow-openbao-egress.yaml
+    mode: "0644"
+  when: enable_openbao_egress_by_label
+
+- name: Apply CiliumClusterwideNetworkPolicy OpenBao egress
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/cilium-allow-openbao-egress.yaml
+  changed_when: false
+  when: enable_openbao_egress_by_label
+
+- name: Render Cilium default-deny-all policy (enforce last — after all allows)
+  ansible.builtin.template:
+    src: cilium-default-deny.yaml.j2
+    dest: /tmp/cilium-default-deny.yaml
+    mode: "0644"
+
+- name: Apply CiliumClusterwideNetworkPolicy default-deny-all
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/cilium-default-deny.yaml
+  changed_when: false
+
+- name: Check Cluster Network Policy CRD exists
+  ansible.builtin.shell: |
+    kubectl get crd clusternetworkpolicies.policy.networking.k8s.io 2>/dev/null && echo "found" || echo "notfound"
+  register: _kcnp_check
+  changed_when: false
+  failed_when: false
+
+- name: Install Cluster Network Policy CRDs
+  ansible.builtin.shell: |
+    kubectl --request-timeout=30s apply --server-side --force-conflicts -f https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/refs/tags/v0.2.0/config/crd/standard/policy.networking.k8s.io_clusternetworkpolicies.yaml
+  register: _kcnp_crd
+  until: _kcnp_crd.rc == 0
+  retries: 6
+  delay: 10
+  changed_when: false
+  when: _kcnp_check.stdout != "found"
+
+- name: Wait for Cluster Network Policy CRDs to be established
+  ansible.builtin.shell: |
+    kubectl wait --for=condition=Established crd/clusternetworkpolicies.policy.networking.k8s.io --timeout=60s
+  register: _kcnp_est
+  until: _kcnp_est.rc == 0
+  retries: 6
+  delay: 10
+  changed_when: false
+
+- name: Render upstream ClusterNetworkPolicy admin-deny-cloud-metadata (KCNP / v1alpha2)
+  ansible.builtin.template:
+    src: kcnp-admin-metadata-deny.yaml.j2
+    dest: /tmp/kcnp-admin-metadata-deny.yaml
+    mode: "0644"
+
+- name: Apply ClusterNetworkPolicy admin-deny-cloud-metadata
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/kcnp-admin-metadata-deny.yaml
+  changed_when: false
+
+- name: Generate per-role kubeconfigs
+  ansible.builtin.include_tasks: kubeconfigs.yml

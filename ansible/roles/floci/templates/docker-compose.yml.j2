@@ -1,0 +1,14 @@
+services:
+  floci:
+    image: floci/floci:{{ floci_version }}
+    container_name: floci
+    ports:
+      - "{{ floci_port }}:4566"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/floci/data:/opt/floci/data
+    environment:
+      - FLOCI_STORAGE_MODE={{ floci_storage_mode }}
+      - FLOCI_DEFAULT_REGION={{ floci_region }}
+      - FLOCI_DEFAULT_ACCOUNT_ID={{ floci_account_id | default('000000000000') }}
+    restart: unless-stopped

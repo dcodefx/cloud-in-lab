@@ -1,0 +1,12 @@
+---
+# transit-envelope-b — app'e özgü OpenBao değerleri (tek kaynak).
+# Faz 2 B-adimi: gercek envelope (datakey -> yerelde AES-GCM).
+# A-adimi (transit-envelope-demo) ornek olarak durur, buna dokunulmaz.
+openbao_spc_role: k8s-csi-provider
+openbao_scripts_cm: transit-envelope-b-scripts
+openbao_script_file: envelope.py
+openbao_mount: transit
+# Transit key suffix: ob_scope (app.name) + openbao_key → transit-envelope-b-app-key
+openbao_key: app-key
+openbao_approle_role_id_path: /mnt/approle/role_id
+openbao_approle_secret_id_path: /mnt/approle/secret_id

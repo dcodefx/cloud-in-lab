@@ -1,0 +1,227 @@
+# OpenBao Prometheus Alert Rules
+# Prometheus Operator tarafindan otomatik kesfedilir:
+#   - namespace: monitoring
+#   - label: release: kube-prom-stack
+#
+# Uygulama:
+#   kubectl apply -f openbao-alerts.yaml -n monitoring
+#
+# Devre disi birakma:
+#   kubectl delete prometheusrule openbao-alerts -n monitoring
+#
+# Uyari: Bu dosya openbao-metrics-exporter bagimsiz calisir.
+#         Exporter'siz calismaz — alert ifadeleri exporter'in
+#         sundugu metrikleri referans alir.
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: openbao-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prom-stack
+    app.kubernetes.io/managed-by: app-deploy
+    app.kubernetes.io/name: openbao-metrics-exporter
+spec:
+  groups:
+    # =============================================
+    # CRITICAL — Anlik mudahale gerektirir
+    # =============================================
+    - name: openbao.critical
+      rules:
+        # OpenBao saglik endpoint'i tamamen erisilemez — process durmus veya ag kesilmis.
+        - alert: OpenBaoDown
+          expr: openbao_up == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "OpenBao saglik endpoint'i erisilemez"
+            description: >-
+              Exporter OpenBao /v1/sys/health endpoint'ine 2 dakikadir erisemiyor.
+              OpenBao process'i durmus veya ag kesilmis olabilir.
+
+        # OpenBao sealed durumda — PKI/Secret erisimi tamamen durmus olabilir.
+        # Tum uygulamalar etkilenir, hizlica unseal gerekir.
+        - alert: OpenBaoSealed
+          expr: openbao_sealed == 1
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "OpenBao sealed"
+            description: >-
+              OpenBao {{ $labels.instance }} en az 1 dakikadir sealed.
+              PKI sertifikasi uretimi, secret okuma ve transit islemleri durmus olabilir.
+              Acil unseal gerekir.
+
+        # Root token uretimi — guvenlik ihlali belirtisi.
+        # Kontrolsuz root token uretimi sistemasal bir sorundur.
+        - alert: OpenBaoRootTokenCreated
+          expr: increase(vault_token_create_root_count[5m]) > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Root token uretildi"
+            description: >-
+              Son 5 dakikada root token uretildi. Bu normal bir durum degilse
+              guvenlik ihlali kontrolu yapilmalidir. Root token uretimi
+              audit log'dan da dogrulanabilir.
+
+        # Autopilot cluster sagligi bozulmus — veri kaybi riski.
+        # Raft cluster'da sagliksiz node var.
+        - alert: OpenBaoAutopilotUnhealthy
+          expr: vault_autopilot_healthy == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "OpenBao cluster sagliksiz"
+            description: >-
+              Autopilot en az 1 node'u sagliksiz olarak isaretledi.
+              Raft cluster butunlugü tehlikede olabilir.
+              Node durumlari: kubectl get pods -n openbao
+
+    # =============================================
+    # WARNING — Takip gerektirir, acil degil
+    # =============================================
+    - name: openbao.warning
+      rules:
+        # Yuksek istek gecikmesi — performans bozulmasi.
+        # p99 istek suresi 1sn'yi asti.
+        - alert: OpenBaoHighRequestLatency
+          expr: histogram_quantile(0.99, sum(rate(vault_core_handle_request_bucket[5m])) by (le)) > 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "OpenBao istek gecikmesi yuksek"
+            description: >-
+              p99 istek suresi 5 dakikadir 1 saniyenin uzerinde.
+              Storage veya audit log darbogazi olabilir.
+
+        # Yuksek login gecikmesi — auth servisi yavasliyor.
+        - alert: OpenBaoHighLoginLatency
+          expr: histogram_quantile(0.99, sum(rate(vault_core_handle_login_request_bucket[5m])) by (le)) > 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "OpenBao login gecikmesi yuksek"
+            description: >-
+              p99 login istek suresi 5 dakikadir 1 saniyenin uzerinde.
+              Kubernetes auth veya AppRole login darbogazi olabilir.
+
+        # Anormal token uretim hizi — siza belirtisi olabilir.
+        - alert: OpenBaoTokenCreateSpike
+          expr: rate(vault_token_creation_count[5m]) > 5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Anormal token uretim hizi"
+            description: >-
+              Son 5 dakikada token uretim hizi beklenenin uzerinde.
+              Sizmis bir credential'in kotuye kullanimi veya
+              applicasyon hatali dongude olabilir.
+
+        # Token sayisi cok yuksek — kaynak sizintisi.
+        - alert: OpenBaoHighTokenCount
+          expr: vault_token_count > 10000
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Cok yuksek token sayisi"
+            description: >-
+              Aktif token sayisi 10.000'i asti. Lease temizligi
+              sorunlu olabilir veya bir uygulama kontrolsuz token
+              uretiyor olabilir.
+
+        # Lease temizleme hatalari — geri alinamaz lease'ler birikiyor.
+        - alert: OpenBaoLeaseExpirationErrors
+          expr: increase(vault_expire_lease_expiration_error_count[5m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Lease temizleme hatasi"
+            description: >-
+              Lease sonlandirma islemlerinde hata olustu.
+              Geri alinamaz lease'ler birikebilir.
+
+        # Geri alinamaz lease'ler var — kaynak sizintisi.
+        - alert: OpenBaoIrrevocableLeases
+          expr: vault_expire_num_irrevocable_leases > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Geri alinamaz lease'ler mevcut"
+            description: >-
+              {{ $value }} adet lease otomatik olarak temizlenemiyor.
+              Manuel temizlik veya kaynak arastirmasi gerekebilir.
+
+        # Raft heartbeat timeout — iletisim kesildi.
+        - alert: OpenBaoRaftHeartbeatTimeout
+          expr: increase(vault_raft_transition_heartbeat_timeout_count[5m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Raft heartbeat timeout"
+            description: >-
+              Raft node'lari arasinda heartbeat suresi doldu.
+              Secim (election) baslatilmis olabilir.
+              Ag veya node sagligi kontrol edilmeli.
+
+        # Lider dustu — secim yasaniyor.
+        - alert: OpenBaoRaftLeaderSteppedDown
+          expr: increase(vault_raft_transition_leader_lease_timeout_count[5m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "OpenBao lider dustu"
+            description: >-
+              Lider node quorum ile iletisimi keserek dustu.
+              Yeni secim baslatildi. Surekli tekrar ediyorsa
+              ag veya disk I/O sorunu olabilir.
+
+        # Follower lag — liderin gerisinde kaldi.
+        - alert: OpenBaoFollowerLagHigh
+          expr: vault_raft_storage_follower_applied_index_delta > 100
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Raft follower geride kaldi"
+            description: >-
+              Follower node liderin {{ $value }} islem gerisinde.
+              Disk I/O veya ag gecikmesi olabilir.
+
+        # Goroutine sayisi yuksek — bellek/bekleme sorunu.
+        - alert: OpenBaoHighGoroutines
+          expr: vault_runtime_num_goroutines > 500
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Yuksek goroutine sayisi"
+            description: >-
+              Goroutine sayisi {{ $value }}'e ulasti.
+              Bellek sizintisi veya bekleyen islem birikintisi olabilir.
+
+        # Exporter taze metrik getiremiyor — monitoring korse.
+        - alert: OpenBaoExporterStale
+          expr: time() - openbao_metrics_exporter_last_success_timestamp_seconds > 120
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "OpenBao metrics exporter guncel degil"
+            description: >-
+              Exporter OpenBao'dan 2 dakikadir taze metrik alamiyor.
+              Token yenileme veya ag sorunu olabilir.
+              Pod durumu: kubectl get pods -n monitoring -l app=openbao-metrics-exporter

@@ -1,0 +1,135 @@
+---
+# OpenBao AppRole temizliği — §7 self-service rolünü siler.
+# Plan §11 guard: aynı rol adını paylaşan başka present app !== varsa
+# SİLİNMEZ (scope_level: namespace paylaşımlı kimlik — kardeş app ölmesin).
+# Rol DELETE secret-id'leri de süpürür (tek çağrı); asılı token'lar TTL-sınırlıdır.
+# Paylaşımlı mount'lar (auth/metadata/KV) ASLA silinmez.
+
+- name: Load OpenBao mount config
+  ansible.builtin.slurp:
+    src: "{{ playbook_dir }}/../outputs/openbao/openbao-mount.json"
+  register: _bao_mount
+  delegate_to: localhost
+  become: false
+  when: target_app is defined
+
+- name: Fail — openbao mount config missing
+  ansible.builtin.fail:
+    msg: "outputs/openbao/openbao-mount.json not found — run 'playbooks/openbao.yml' first."
+  when: (target_app is defined) and (_bao_mount is failed or _bao_mount is not defined)
+
+- name: Set OpenBao mount values
+  ansible.builtin.set_fact:
+    openbao_approle_mount_cfg: "{{ (_bao_mount.content | b64decode | from_json).approle_mount }}"
+  when: target_app is defined
+
+- name: Load ops-admin credentials
+  ansible.builtin.slurp:
+    src: "{{ playbook_dir }}/../outputs/openbao/ops-admin.json"
+  register: _ops_admin_creds
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: target_app is defined
+
+- name: Fail — ops-admin credentials missing
+  ansible.builtin.fail:
+    msg: "outputs/openbao/ops-admin.json not found — openbao.yml (k8s/openbao-ops rbac-platform) may not have been run."
+  when: (target_app is defined) and (_ops_admin_creds is failed or _ops_admin_creds is not defined)
+
+- name: Set ops-admin role_id/secret_id
+  ansible.builtin.set_fact:
+    _ops_admin_role_id: "{{ (_ops_admin_creds.content | b64decode | from_json).role_id }}"
+    _ops_admin_secret_id: "{{ (_ops_admin_creds.content | b64decode | from_json).secret_id }}"
+  no_log: true
+  when: target_app is defined
+
+- name: OpenBao AppRole login (ops-admin)
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/auth/{{ openbao_approle_mount_cfg }}/login"
+    method: POST
+    body_format: json
+    body:
+      role_id: "{{ _ops_admin_role_id }}"
+      secret_id: "{{ _ops_admin_secret_id }}"
+    return_content: true
+    validate_certs: false
+  register: _bao_login
+  when: target_app is defined
+  no_log: true
+
+- name: Set OpenBao client token
+  ansible.builtin.set_fact:
+    _bao_client_token: "{{ _bao_login.json.auth.client_token }}"
+  when: (target_app is defined) and (_bao_login is defined and _bao_login.status == 200)
+
+- name: Fail — OpenBao login failed
+  ansible.builtin.fail:
+    msg: "OpenBao ops-admin login failed (HTTP {{ _bao_login.status }})."
+  when: (target_app is defined) and (_bao_login is not defined or _bao_login.status != 200)
+
+# ============================================
+# Scope/rol adını envanterden çıkar (target_app: apps[] girdisi)
+# ============================================
+
+- name: Compute target §7 scope/name
+  ansible.builtin.set_fact:
+    _ob_scope: "{{ target_app.name }}"
+    _ob_profile: "{{ target_app.openbao.profile }}"
+  when:
+    - target_app is defined
+    - target_app.openbao is defined
+    - target_app.openbao.enable | default(false)
+    - target_app.openbao.profile != 'none'
+
+- name: Compute target AppRole name
+  ansible.builtin.set_fact:
+    _ob_role_name: "app-{{ _ob_scope }}-{{ _ob_profile }}"
+  when: _ob_scope is defined
+
+# ============================================
+# Guard — aynı rol adını paylaşan, hâlâ present olan app sayısı
+# (target hariç). 0 ise sil, değilse koru.
+# ============================================
+
+- name: Count present apps sharing the role
+  ansible.builtin.set_fact:
+    _sharers: "{{ _sharers | default(0) + 1 }}"
+  loop: "{{ apps | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    _app_scope_level: "{{ item.openbao.scope_level | default('app') }}"
+    _app_scope: >-
+      {{ item.openbao.scope | default(item.name)
+         if (item.openbao.scope_level | default('app')) == 'app'
+         else item.namespace }}
+    _app_profile: "{{ item.openbao.profile }}"
+    _app_role_name: "{{ (_app_scope_level == 'app') | ternary('app-', 'ns-') }}{{ _app_scope }}-{{ _app_profile }}"
+  when:
+    - _ob_role_name is defined
+    - item.openbao is defined
+    - item.openbao.enable | default(false)
+    - item.openbao.profile != 'none'
+    - (item.state | default('present')) == 'present'
+    - _app_role_name == _ob_role_name
+
+- name: Delete AppRole — guard passed
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/auth/{{ openbao_approle_mount_cfg }}/role/{{ _ob_role_name }}"
+    method: DELETE
+    headers:
+      X-Vault-Token: "{{ _bao_client_token }}"
+    validate_certs: false
+    status_code: [204, 404]
+  when:
+    - _ob_role_name is defined
+    - _sharers | default(0) == 0
+  changed_when: false
+
+- name: AppRole kept — shared by another app
+  ansible.builtin.debug:
+    msg: "AppRole {{ _ob_role_name }} kept ({{ _sharers }} app(s) still share it)."
+  when:
+    - _ob_role_name is defined
+    - _sharers | default(0) > 0

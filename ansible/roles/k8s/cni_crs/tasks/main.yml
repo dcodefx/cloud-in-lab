@@ -1,0 +1,64 @@
+---
+- name: Set Cilium facts
+  ansible.builtin.set_fact:
+    cilium_lb_ip_pool: "{{ k8s_cluster.lb_ip_pool }}"
+    cilium_lb_ip_pool_start: "{{ k8s_cluster.lb_ip_pool.split('-')[0] }}"
+    cilium_lb_ip_pool_stop: "{{ k8s_cluster.lb_ip_pool.split('-')[-1] }}"
+    cilium_l2_interface: "{{ k8s_cluster.l2_interface | default('eth0') }}"
+    cluster_name: "{{ k8s_cluster.cluster_name }}"
+    gateway_hostname: "{{ k8s_cluster.gateway_hostname }}"
+  changed_when: false
+
+- name: Wait for API server to be ready before applying Cilium CRs
+  ansible.builtin.shell: |
+    kubectl --request-timeout=10s get --raw /healthz 2>/dev/null | grep -q ok
+  register: _healthz
+  until: _healthz.rc == 0
+  retries: 12
+  delay: 10
+  changed_when: false
+
+- name: Deploy CiliumLoadBalancerIPPool
+  ansible.builtin.template:
+    src: ippool.yaml.j2
+    dest: /tmp/cilium-ippool.yaml
+    mode: "0644"
+
+- name: Apply CiliumLoadBalancerIPPool
+  ansible.builtin.shell: |
+    kubectl --request-timeout=10s apply -f /tmp/cilium-ippool.yaml
+  register: _ippool
+  until: _ippool.rc == 0
+  retries: 12
+  delay: 10
+  changed_when: false
+
+- name: Deploy CiliumL2AnnouncementPolicy
+  ansible.builtin.template:
+    src: l2announcement.yaml.j2
+    dest: /tmp/cilium-l2.yaml
+    mode: "0644"
+
+- name: Apply CiliumL2AnnouncementPolicy
+  ansible.builtin.shell: |
+    kubectl --request-timeout=10s apply -f /tmp/cilium-l2.yaml
+  register: _l2
+  until: _l2.rc == 0
+  retries: 12
+  delay: 10
+  changed_when: false
+
+- name: Deploy Shared Gateway
+  ansible.builtin.template:
+    src: shared-gateway.yaml.j2
+    dest: /tmp/shared-gateway.yaml
+    mode: "0644"
+
+- name: Apply Shared Gateway
+  ansible.builtin.shell: |
+    kubectl --request-timeout=10s apply -f /tmp/shared-gateway.yaml
+  register: _gw
+  until: _gw.rc == 0
+  retries: 12
+  delay: 10
+  changed_when: false

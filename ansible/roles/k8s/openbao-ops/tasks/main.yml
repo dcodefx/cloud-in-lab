@@ -1,0 +1,209 @@
+---
+- name: Ensure OpenBao reachable + unsealed
+  ansible.builtin.include_tasks: ensure_ready.yml
+
+# ============================================
+# K8s-tarafı OpenBao operasyonları (k8s-openbao-ops)
+# Tüm API çağrıları ops-admin token ile yapılır (openbao-rbac.md §3, P4).
+# Root yalnızca openbao.yml server rolünün bootstrap.yml'sindedir
+# (mount açma + engine içeriği + rbac-platform, bir kez).
+# Operasyonel işler burada ops-admin AppRole login'iyle sürer.
+# ============================================
+
+- name: Ensure reviewer kubeconfig exists (idempotent — apply every run)
+  ansible.builtin.include_role:
+    name: ../roles/k8s/security
+    tasks_from: gen-kubeconfig.yml
+  vars:
+    gen_kc_cluster_role: "system:auth-delegator"
+    gen_kc_namespace: "kube-system"
+    gen_kc_sa_name: "openbao-auth-reviewer"
+    gen_kc_cluster_wide: true
+    gen_kc_filename: "{{ openbao_k8s_reviewer_conf }}"
+  tags: ['openbao-ops']
+
+# ============================================
+- name: Login with P4 ops-admin AppRole credentials
+  block:
+    - name: Read P4 ops-admin credentials from controller
+      ansible.builtin.slurp:
+        src: "{{ playbook_dir }}/../outputs/openbao/ops-admin.json"
+      register: _ops_admin_creds
+      delegate_to: localhost
+      become: false
+      no_log: true
+      ignore_errors: true
+
+    - name: Fail if ops-admin credentials not found
+      ansible.builtin.fail:
+        msg: >
+          outputs/openbao/ops-admin.json not found — openbao.yml
+          (server bootstrap → rbac-platform.yml) may not have been run.
+      when: _ops_admin_creds is failed
+
+    - name: Login with ops-admin role_id + secret_id
+      ansible.builtin.uri:
+        url: "{{ openbao_address }}/v1/auth/{{ openbao_approle_mount }}/login"
+        method: POST
+        body:
+          role_id: "{{ (_ops_admin_creds.content | b64decode | from_json).role_id }}"
+          secret_id: "{{ (_ops_admin_creds.content | b64decode | from_json).secret_id }}"
+        body_format: json
+        validate_certs: false
+        status_code: 200
+      register: _ops_login
+      no_log: true
+
+    - name: Set bao_token to ops-admin
+      ansible.builtin.set_fact:
+        bao_token: "{{ _ops_login.json.auth.client_token }}"
+      no_log: true
+
+# ============================================
+# Kubernetes auth (CSI provider SA-JWT, plan Faz 1.5.4 Varyant A)
+# Mount bootstrap'te root ile açıldı; config/role burada ops-admin ile.
+# Reviewer SA: gen-kubeconfig.yml ile önceden üretilir
+# (cluster_role=system:auth-delegator, cluster_wide=true).
+# ============================================
+
+- name: Read K8s API server endpoint from cluster
+  ansible.builtin.shell: |
+    kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}'
+  register: _k8s_api_server
+  changed_when: false
+
+- name: Read K8s cluster CA certificate (base64)
+  ansible.builtin.shell: |
+    kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}'
+  register: _k8s_ca_b64
+  changed_when: false
+  no_log: true
+
+- name: Read reviewer kubeconfig from controller
+  ansible.builtin.slurp:
+    src: "{{ openbao_k8s_reviewer_conf }}"
+  register: _reviewer_conf
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Fail if reviewer kubeconfig not found
+  ansible.builtin.fail:
+    msg: >
+      outputs/k8s/openbao-auth-reviewer.conf not found.
+      First run 'ansible-playbook playbooks/gen-kubeconfig.yml -e cluster_role=system:auth-delegator -e namespace=kube-system -e sa_name=openbao-auth-reviewer -e cluster_wide=true'.
+  when: _reviewer_conf is failed
+
+- name: Parse reviewer JWT
+  ansible.builtin.set_fact:
+    reviewer_jwt: "{{ (_reviewer_conf.content | b64decode | from_yaml).users[0].user.token }}"
+  no_log: true
+
+- name: Configure Kubernetes auth method
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/auth/{{ openbao_k8s_auth_mount }}/config"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      kubernetes_host: "{{ _k8s_api_server.stdout }}"
+      kubernetes_ca_cert: "{{ _k8s_ca_b64.stdout | b64decode }}"
+      token_reviewer_jwt: "{{ reviewer_jwt }}"
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+  changed_when: true
+  no_log: true
+
+- name: Create Kubernetes auth role (wildcard SA, policy-based scope isolation)
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/auth/{{ openbao_k8s_auth_mount }}/role/{{ openbao_k8s_auth_role }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      bound_service_account_names: ["*"]
+      bound_service_account_namespaces: ["*"]
+      audience: "openbao"
+      policies: ["k8s-app"]
+      token_ttl: "1h"
+      token_max_ttl: "24h"
+      token_num_uses: 0
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+  changed_when: true
+
+# ============================================
+# AppRole role_id/secret_id (ops-admin) → K8s Secret'lar
+# Role'lar bootstrap'te root ile oluşturulur; taze secret_id'ler
+# ops-admin AppRole yetkisiyle üretilir (auth/approle/role/* create/read).
+# ============================================
+
+- name: Get k8s-csi AppRole role_id
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/auth/{{ openbao_approle_mount }}/role/k8s-csi/role-id"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    validate_certs: false
+    status_code: 200
+  register: _csi_role_id
+  no_log: true
+
+- name: Generate k8s-csi AppRole secret_id
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/auth/{{ openbao_approle_mount }}/role/k8s-csi/secret-id"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body: {}
+    body_format: json
+    validate_certs: false
+    status_code: 200
+  register: _csi_secret_id
+  no_log: true
+
+- name: Create K8s Secret with k8s-csi AppRole credentials
+  ansible.builtin.shell: |
+    kubectl -n kube-system create secret generic openbao-csi-driver \
+      --from-literal=role_id="{{ _csi_role_id.json.data.role_id }}" \
+      --from-literal=secret_id="{{ _csi_secret_id.json.data.secret_id }}" \
+      --dry-run=client -o yaml | kubectl apply -f -
+
+  changed_when: false
+  no_log: true
+
+- name: Get cert-manager AppRole role_id
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/auth/{{ openbao_approle_mount }}/role/cert-manager/role-id"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    validate_certs: false
+    status_code: 200
+  register: _cm_role_id
+  no_log: true
+
+- name: Generate cert-manager AppRole secret_id
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/auth/{{ openbao_approle_mount }}/role/cert-manager/secret-id"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body: {}
+    body_format: json
+    validate_certs: false
+    status_code: 200
+  register: _cm_secret_id
+  no_log: true
+
+- name: Create K8s Secret with cert-manager AppRole credentials
+  ansible.builtin.shell: |
+    kubectl -n cert-manager create secret generic cert-manager-approle \
+      --from-literal=role_id="{{ _cm_role_id.json.data.role_id }}" \
+      --from-literal=secret_id="{{ _cm_secret_id.json.data.secret_id }}" \
+      --dry-run=client -o yaml | kubectl apply -f -
+
+  changed_when: false
+  no_log: true

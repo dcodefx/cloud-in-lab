@@ -1,0 +1,87 @@
+---
+- name: Wait for control plane node to become Ready
+  ansible.builtin.shell: |
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf get node {{ ansible_facts['hostname'] }} \
+      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+  register: _node_ready
+  until: _node_ready.stdout == "True"
+  retries: 30
+  delay: 10
+  when: _first_boot | default(false)
+
+- name: Verify API server endpoints readiness
+  ansible.builtin.shell: |
+    set -e
+    for endpoint in healthz readyz openapi/v2; do
+      echo "Checking /$endpoint..."
+      for i in {1..30}; do
+        if kubectl --kubeconfig=/etc/kubernetes/admin.conf get --raw "/$endpoint" >/dev/null 2>&1; then
+          echo "  /$endpoint OK"
+          break
+        fi
+        if [ $i -eq 30 ]; then
+          echo "  /$endpoint TIMEOUT"
+          exit 1
+        fi
+        sleep 5
+      done
+    done
+    echo "kube-apiserver fully ready"
+  when: _first_boot | default(false)
+
+- name: Generate bootstrap token
+  ansible.builtin.command:
+    cmd: kubeadm token create --ttl 48h
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: _token
+  changed_when: false
+  no_log: true
+  when: _first_boot | default(false)
+
+- name: Read discovery kubeconfig from cluster-info ConfigMap (directly to stdout — no disk write needed)
+  ansible.builtin.shell:
+    cmd: |
+      kubectl --kubeconfig=/etc/kubernetes/admin.conf \
+        -n kube-public get configmap cluster-info \
+        -o jsonpath='{.data.kubeconfig}'
+  register: _disc_raw
+  changed_when: false
+  when: _first_boot | default(false)
+
+- name: Extract API server URL and CA data
+  ansible.builtin.set_fact:
+    _disc_parsed: "{{ _disc_raw.stdout | from_yaml }}"
+  when: _first_boot | default(false)
+
+- name: Write discovery kubeconfig with embedded bootstrap token
+  ansible.builtin.copy:
+    content: |
+      apiVersion: v1
+      kind: Config
+      clusters:
+      - name: "default"
+        cluster:
+          server: "{{ _disc_parsed.clusters[0].cluster.server }}"
+          certificate-authority-data: "{{ _disc_parsed.clusters[0].cluster['certificate-authority-data'] }}"
+      users:
+      - name: "bootstrap"
+        user:
+          token: "{{ _token.stdout }}"
+      contexts:
+      - name: "bootstrap"
+        context:
+          cluster: "default"
+          user: "bootstrap"
+      current-context: "bootstrap"
+    dest: /tmp/discovery.kubeconfig
+    mode: "0600"
+  changed_when: false
+  no_log: true
+  when: _first_boot | default(false)
+
+- name: Fetch admin.conf to control machine
+  ansible.builtin.fetch:
+    src: /etc/kubernetes/admin.conf
+    dest: "{{ playbook_dir }}/../outputs/k8s/admin.conf"
+    flat: true

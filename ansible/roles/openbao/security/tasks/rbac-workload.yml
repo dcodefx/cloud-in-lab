@@ -1,0 +1,88 @@
+---
+# Workload RBAC — 7 generic profile = role (sabit, bir kez)
+# Plan §6 templating mimarisi: metadata.scope ile izolasyon
+# Bu task ops-admin token ile çalışır (root DEĞIL)
+
+# ============================================
+# 1. Templated policy'ler (metadata.scope ile scope-bazlı izolasyon)
+# ============================================
+
+- name: Get AppRole mount accessor
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/sys/auth"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    validate_certs: false
+    status_code: 200
+  register: _auth_list
+
+- name: Set approle accessor fact
+  ansible.builtin.set_fact:
+    approle_accessor: "{{ _auth_list.json[openbao_approle_mount ~ '/'].accessor }}"
+
+- name: Create workload templated policies (ops-admin token)
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/sys/policies/acl/{{ item.policy }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      policy: "{{ lookup('template', playbook_dir + '/../roles/openbao/security/templates/workload-' + item.name + '-templated.hcl.j2') }}"
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+  loop: "{{ openbao_workload_profiles }}"
+  vars:
+    approle_accessor: "{{ approle_accessor }}"
+  changed_when: true
+
+# ============================================
+# 2. Workload AppRole'ler (profil = role adı)
+# ============================================
+
+- name: Create workload AppRole roles (profile = role name)
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/auth/{{ openbao_approle_mount }}/role/{{ item.name }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body: "{{ {
+      'token_policies': ['workload-' ~ item.name ~ '-templated'],
+      'token_ttl': item.token_ttl,
+      'token_max_ttl': item.token_max_ttl,
+      'token_num_uses': 0,
+      'token_type': 'service' if item.renewable | default(true) else 'batch'
+    } | combine(item.extra | default({})) }}"
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+  loop: "{{ openbao_workload_profiles }}"
+  changed_when: true
+
+# ============================================
+# 3. Role ID'leri oku ve JSON dosyasına yaz (K8s tarafı bunu okur)
+# ============================================
+
+- name: Get workload role_ids
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/auth/{{ openbao_approle_mount }}/role/{{ item.name }}/role-id"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    validate_certs: false
+    status_code: 200
+  register: _role_ids
+  loop: "{{ openbao_workload_profiles }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+
+- name: Write profile-role-ids.json
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/../outputs/openbao/profile-role-ids.json"
+    content: "{{ dict(_role_ids.results | map(attribute='item.name') | zip(_role_ids.results | map(attribute='json.data.role_id'))) | to_nice_json }}"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+  changed_when: false

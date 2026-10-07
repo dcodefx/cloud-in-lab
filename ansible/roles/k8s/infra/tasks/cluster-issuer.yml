@@ -1,0 +1,117 @@
+---
+- name: Verify cluster is reachable before cert ops (pre-check)
+  ansible.builtin.shell: |
+    kubectl --request-timeout=10s get nodes --no-headers 2>&1 | head -n 20
+  register: _pre_nodes
+  until: _pre_nodes.rc == 0
+  retries: 6
+  delay: 5
+  changed_when: false
+
+- name: Read OpenBao TLS CA from openbao-ca-tls Secret
+  ansible.builtin.shell: |
+    kubectl -n kube-system get secret openbao-ca-tls \
+      -o jsonpath='{.data.ca\.crt}' | base64 -d
+  register: _openbao_ca
+  changed_when: false
+  failed_when: false
+
+- name: Fail if openbao-ca-tls Secret not found or empty (fail-loud — certificate creation gate)
+  ansible.builtin.fail:
+    msg: |
+      openbao-ca-tls Secret (kube-system) not found or empty — refusing to proceed without certificates (P1-1 fail-loud).
+      Cause: CSI role did not create the 'openbao-ca-tls' secret or the OpenBao TLS cert is missing.
+      Fix: run 'ansible-playbook playbooks/k8s.yml --tags csi' or re-run the full k8s.yml.
+      Check: kubectl -n kube-system get secret openbao-ca-tls -o yaml
+  when: _openbao_ca.rc != 0 or _openbao_ca.stdout | trim | length == 0
+
+- name: Set ca_bundle fact (OpenBao's own TLS CA)
+  ansible.builtin.set_fact:
+    _ca_bundle: "{{ _openbao_ca.stdout | b64encode }}"
+  changed_when: false
+
+- name: Read cert-manager AppRole credentials from K8s Secret
+  ansible.builtin.shell: |
+    kubectl -n cert-manager get secret cert-manager-approle \
+      -o jsonpath='{.data.role_id}' | base64 -d
+  register: _cm_role_id
+  changed_when: false
+  failed_when: false
+
+- name: Fail if cert-manager-approle Secret not found or empty (fail-loud — certificate creation gate)
+  ansible.builtin.fail:
+    msg: |
+      cert-manager-approle Secret (cert-manager) not found or empty — refusing to proceed without certificates (P1-1 fail-loud).
+       Cause: k8s/openbao-ops role did not create the AppRole secret.
+      Fix: run 'ansible-playbook playbooks/k8s.yml --tags openbao-ops' or re-run the full k8s.yml.
+      Check: kubectl -n cert-manager get secret cert-manager-approle -o yaml
+  when: _cm_role_id.rc != 0 or _cm_role_id.stdout | trim | length == 0
+
+- name: Set cert_manager_role_id fact
+  ansible.builtin.set_fact:
+    cert_manager_role_id: "{{ _cm_role_id.stdout }}"
+  changed_when: false
+
+- name: Deploy ClusterIssuer
+  ansible.builtin.template:
+    src: cluster-issuer.yaml.j2
+    dest: /tmp/openbao-cluster-issuer.yaml
+    mode: "0644"
+
+- name: Apply ClusterIssuer
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/openbao-cluster-issuer.yaml
+  changed_when: false
+
+- name: Wait for ClusterIssuer to become Ready (fail-loud)
+  ansible.builtin.shell: |
+    kubectl wait --for=condition=Ready clusterissuer/openbao-pki --timeout=60s
+  register: _ci_wait
+  until: _ci_wait.rc == 0
+  retries: 3
+  delay: 10
+  changed_when: false
+
+- name: Deploy Gateway TLS Certificate
+  ansible.builtin.template:
+    src: gateway-certificate.yaml.j2
+    dest: /tmp/gateway-certificate.yaml
+    mode: "0644"
+
+- name: Apply Gateway TLS Certificate
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/gateway-certificate.yaml
+  changed_when: false
+
+- name: Wait for Gateway TLS Certificate to become Ready (fail-loud)
+  ansible.builtin.shell: |
+    kubectl wait --for=condition=Ready certificate/gateway-tls -n kube-system --timeout=300s
+  register: _cert_wait
+  until: _cert_wait.rc == 0
+  retries: 2
+  delay: 10
+  changed_when: false
+
+- name: Verify gateway-tls Secret exists (consumption gate)
+  ansible.builtin.shell: |
+    kubectl -n kube-system get secret gateway-tls -o jsonpath='{.data.tls\.crt}' 2>/dev/null | wc -c
+  register: _gw_tls_secret
+  changed_when: false
+  failed_when: false
+
+- name: Fail if gateway-tls Secret missing or empty (consumption gate)
+  ansible.builtin.fail:
+    msg: |
+      gateway-tls Secret (kube-system) not found or empty.
+      Check: kubectl -n kube-system get secret gateway-tls -o yaml
+  when: _gw_tls_secret.stdout | trim | int == 0
+
+- name: Wait for Gateway to consume gateway-tls (consumption gate)
+  ansible.builtin.shell: |
+    kubectl wait --for=condition=Programmed gateway/{{ gateway_hostname }} -n kube-system --timeout=120s
+  register: _gw_wait
+  until: _gw_wait.rc == 0
+  retries: 2
+  delay: 10
+  changed_when: false
+

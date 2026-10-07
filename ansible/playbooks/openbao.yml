@@ -1,0 +1,10 @@
+---
+- import_playbook: pre/connect.yml
+
+- name: OpenBao Server Install
+  hosts: openbao
+  become: true
+  roles:
+    - role: ../roles/openbao/server
+      tags: ['openbao', 'install']
+      when: openbao.enable | default(false) | bool

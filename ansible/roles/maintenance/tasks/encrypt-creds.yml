@@ -1,0 +1,78 @@
+---
+- name: "Preflight: systemd-creds available"
+  when: m_restic_jobs_local | length > 0
+  ansible.builtin.command: systemd-creds --version
+  changed_when: false
+
+- name: "Preflight: credential host key present?"
+  when: m_restic_jobs_local | length > 0
+  ansible.builtin.stat:
+    path: /var/lib/systemd/credential.secret
+  register: m_cred_hostkey
+
+- name: "Preflight: initialise the credential host key (only when absent)"
+  when: m_restic_jobs_local | length > 0 and not m_cred_hostkey.stat.exists
+  ansible.builtin.command: systemd-creds setup
+  changed_when: true
+
+- name: "Sweep stale plaintext from a previous failed run"
+  when: m_restic_jobs_local | length > 0
+  ansible.builtin.find:
+    paths: "{{ m_conf }}/backup"
+    patterns: "*.secrets.plain"
+  register: m_stale_plain
+
+- name: "Delete stale plaintext secrets (0600 root, holds 3 live credentials)"
+  when: m_restic_jobs_local | length > 0 and m_stale_plain.files | length > 0
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ m_stale_plain.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+
+- name: "Seal secrets into systemd credentials (plaintext cannot outlive the block)"
+  when: m_restic_jobs_local | length > 0
+  block:
+    - name: "Render plaintext secrets (temporary — removed in always:)"
+      ansible.builtin.template:
+        src: backup.secrets.env.j2
+        dest: "{{ m_conf }}/backup/{{ item.key }}.secrets.plain"
+        mode: "0600"
+        owner: root
+        group: root
+      loop: "{{ m_restic_jobs_local }}"
+      loop_control:
+        label: "{{ item.key }}"
+      no_log: true
+
+    - name: "Encrypt secrets into a systemd credential (AES256-GCM, host key)"
+      ansible.builtin.command:
+        cmd: >-
+          systemd-creds encrypt
+          --name={{ item.key }}-secrets
+          --with-key=host
+          {{ m_conf }}/backup/{{ item.key }}.secrets.plain
+          {{ m_conf }}/backup/{{ item.key }}.secrets.conf
+      loop: "{{ m_restic_jobs_local }}"
+      loop_control:
+        label: "{{ item.key }}"
+      changed_when: true
+
+    - name: "Lock down the ciphertext file (encrypted — safe to keep, 0600 root)"
+      ansible.builtin.file:
+        path: "{{ m_conf }}/backup/{{ item.key }}.secrets.conf"
+        mode: "0600"
+        owner: root
+        group: root
+      loop: "{{ m_restic_jobs_local }}"
+      loop_control:
+        label: "{{ item.key }}"
+  always:
+    - name: "Delete the plaintext secrets file (runs even if encrypt failed)"
+      ansible.builtin.file:
+        path: "{{ m_conf }}/backup/{{ item.key }}.secrets.plain"
+        state: absent
+      loop: "{{ m_restic_jobs_local }}"
+      loop_control:
+        label: "{{ item.key }}"

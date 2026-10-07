@@ -1,0 +1,50 @@
+---
+# ============================================
+# Policy: allow-fqdn-egress
+# Tür: CiliumNetworkPolicy (namespace-scoped)
+# Katman: Güvenlik / Ağ (Network Policy)
+# ============================================
+# Ne işe yarar:
+#   Seçili pod'ların dış dünyadaki belirli domain'lere
+#   (FQDN) HTTPS üzerinden erişmesine izin verir.
+#
+# Kullanım senaryosu:
+#   payment-service pod'u stripe.com API'sine ve
+#   S3 bucket'ına erişmek zorunda.
+#   Diğer tüm dış dünya erişimi engellenir.
+#
+# toFQDNs nasıl çalışır (Cilium eBPF):
+#   1. Pod api.stripe.com için DNS sorgusu yapar (port 53)
+#   2. Cilium eBPF bu sorguyu yakalar
+#   3. Dönen IP adresini anlık olarak eBPF haritasına kaydeder
+#   4. Pod'un sadece o IP:443 ile konuşmasına izin verir
+#   5. Diğer tüm dış IP'lere paket DROP edilir
+#
+# matchName vs matchPattern:
+#   - matchName: Birebir domain eşleşmesi (api.stripe.com)
+#   - matchPattern: Wildcard (joker) eşleşme (*.s3.amazonaws.com)
+#
+# Not: CiliumNetworkPolicy (namespace-scoped) kullanıldığı için
+#   sadece policy'nin namespace'indeki pod'ları etkiler.
+#   Cluster-wide ihtiyacı varsa CiliumClusterwideNetworkPolicy
+#   kullanılmalıdır.
+# ============================================
+
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-stripe-and-s3-egress
+  namespace: payment-team
+spec:
+  description: "Payment pod'unun sadece Stripe API ve S3 ile HTTPS üzerinden konuşmasına izin verir"
+  endpointSelector:
+    matchLabels:
+      app: payment-service
+  egress:
+  - toFQDNs:
+    - matchName: "api.stripe.com"
+    - matchPattern: "*.s3.amazonaws.com"
+    toPorts:
+    - ports:
+      - port: "443"
+        protocol: TCP

@@ -1,0 +1,210 @@
+---
+- name: Set flat vars from nested structure
+  ansible.builtin.set_fact:
+    csi_driver_version: "{{ k8s_cluster.csi_driver }}"
+  changed_when: false
+
+- name: Ensure OpenBao reachable + unsealed (for CSI TLS CA)
+  ansible.builtin.include_tasks: ../../../k8s/openbao-ops/tasks/ensure_ready.yml
+
+- name: Add CSI Secrets Store Driver Helm repo
+  ansible.builtin.command:
+    cmd: helm repo add secrets-store-csi-driver https://kubernetes-sigs.github.io/secrets-store-csi-driver/charts
+  register: _repo
+  changed_when: '"already exists" not in _repo.stdout'
+  failed_when: false
+
+- name: Update Helm repos
+  ansible.builtin.command:
+    cmd: helm repo update
+  when: _repo.changed | default(false)
+
+- name: Clean pending Helm releases and stuck upgrade jobs
+  ansible.builtin.shell: |
+    kubectl -n kube-system delete secret \
+      -l "owner=helm,name=csi-secrets-store,status=pending-install" --ignore-not-found
+    kubectl -n kube-system delete job \
+      -l "app.kubernetes.io/instance=csi-secrets-store" --ignore-not-found 2>/dev/null
+
+  changed_when: false
+  failed_when: false
+
+- name: Install CSI Secrets Store Driver
+  block:
+    - name: Helm upgrade CSI Secrets Store Driver
+      ansible.builtin.command:
+        argv: >-
+          {{ ['helm', 'upgrade', '--install', 'csi-secrets-store',
+              'secrets-store-csi-driver/secrets-store-csi-driver',
+              '--namespace', 'kube-system']
+             + (['--version', csi_chart_version] if csi_chart_version | length > 0 else [])
+             + ['--set', 'image.tag=' ~ csi_driver_version,
+                '--set', 'enableSecretRotation=true',
+                '--set', 'rotationPollInterval=60s',
+                '--set', 'syncSecret.enabled=false'] }}
+      register: _csi
+      changed_when: _csi.rc == 0
+  rescue:
+    - name: Helm lock cleanup — delete stuck release
+      ansible.builtin.shell: |
+        kubectl -n kube-system delete secret -l "owner=helm,name=csi-secrets-store,status=pending-install" --ignore-not-found
+
+      register: _cleanup
+      when: _csi.stderr is search("another operation")
+      changed_when: _cleanup.rc == 0
+
+    - name: Helm lock cleanup — log and retry
+      ansible.builtin.debug:
+        msg: "Helm release lock 'csi-secrets-store' cleared, retrying."
+      when: _csi.stderr is search("another operation")
+
+    - name: Retry Helm upgrade CSI Secrets Store Driver
+      ansible.builtin.command:
+        argv: >-
+          {{ ['helm', 'upgrade', '--install', 'csi-secrets-store',
+              'secrets-store-csi-driver/secrets-store-csi-driver',
+              '--namespace', 'kube-system']
+             + (['--version', csi_chart_version] if csi_chart_version | length > 0 else [])
+             + ['--set', 'image.tag=' ~ csi_driver_version,
+                '--set', 'enableSecretRotation=true',
+                '--set', 'rotationPollInterval=60s',
+                '--set', 'syncSecret.enabled=false'] }}
+      register: _csi_retry
+      changed_when: _csi_retry.rc == 0
+      when: _csi.stderr is search("another operation")
+
+- name: Add OpenBao Helm repo
+  ansible.builtin.command:
+    cmd: helm repo add openbao https://openbao.github.io/openbao-helm
+  register: _ob_repo
+  changed_when: '"already exists" not in _ob_repo.stdout'
+  failed_when: false
+
+- name: Update Helm repos for OpenBao chart
+  ansible.builtin.command:
+    cmd: helm repo update
+  when: _ob_repo.changed | default(false)
+
+- name: Ensure OpenBao TLS cert exists on OpenBao server (run openbao playbook first)
+  ansible.builtin.command:
+    cmd: "ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@{{ openbao_host }} test -f {{ openbao_tls_cert_path }}"
+  register: _openbao_cert_present
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Fail if OpenBao not installed
+  ansible.builtin.fail:
+    msg: >-
+      OpenBao TLS certificate not found ({{ openbao_tls_cert_path }}).
+      Run 'ansible-playbook playbooks/openbao.yml' BEFORE the CSI role.
+  when: _openbao_cert_present.rc != 0
+
+- name: Read OpenBao TLS certificate from server
+  ansible.builtin.command:
+    cmd: "ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@{{ openbao_host }} cat {{ openbao_tls_cert_path }} | base64 -w0"
+  register: _openbao_cert
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  no_log: true
+
+- name: Create openbao-ca-tls Secret in kube-system
+  ansible.builtin.shell: |
+    kubectl -n kube-system create secret generic openbao-ca-tls \
+      --from-file=ca.crt=/dev/stdin \
+      --dry-run=client -o yaml | kubectl apply -f -
+  args:
+    stdin: "{{ _openbao_cert.stdout | b64decode }}"
+  changed_when: false
+  no_log: true
+
+- name: Clear OpenBao cert from memory
+  ansible.builtin.set_fact:
+    _openbao_cert: null
+    _openbao_cert_present: null
+  no_log: true
+
+- name: Render OpenBao CSI agent override config
+  ansible.builtin.template:
+    src: agent-override-configmap.yaml.j2
+    dest: /tmp/csi-agent-override.yaml
+    mode: "0644"
+
+- name: Apply OpenBao CSI agent override ConfigMap
+  ansible.builtin.shell: |
+    kubectl -n kube-system apply -f /tmp/csi-agent-override.yaml
+  changed_when: false
+
+- name: Clean pending Helm releases and stuck upgrade jobs
+  ansible.builtin.shell: |
+    kubectl -n kube-system delete secret \
+      -l "owner=helm,name=openbao-csi,status=pending-install" --ignore-not-found
+    kubectl -n kube-system delete job \
+      -l "app.kubernetes.io/instance=openbao-csi" --ignore-not-found 2>/dev/null
+
+  changed_when: false
+  failed_when: false
+
+- name: Install OpenBao CSI Provider via OpenBao Helm chart
+  block:
+    - name: Helm upgrade OpenBao CSI Provider
+      ansible.builtin.command:
+        argv: >-
+          {{ ['helm', 'upgrade', '--install', 'openbao-csi', 'openbao/openbao',
+              '--namespace', 'kube-system']
+             + (['--version', openbao_csi_chart_version] if openbao_csi_chart_version | length > 0 else [])
+             + ['--set', 'server.enabled=false',
+                '--set', 'injector.enabled=false',
+                '--set', 'csi.enabled=true',
+                '--set', 'global.externalBaoAddr=' ~ openbao_address,
+                '--set', 'csi.volumes[0].name=openbao-ca',
+                '--set', 'csi.volumes[0].secret.secretName=openbao-ca-tls',
+                '--set', 'csi.volumeMounts[0].name=openbao-ca',
+                '--set', 'csi.volumeMounts[0].mountPath=/vault/ca',
+                '--set', 'csi.volumes[1].name=openbao-agent-override',
+                '--set', 'csi.volumes[1].configMap.name=openbao-csi-agent-override',
+                '--set', 'csi.volumeMounts[1].name=openbao-agent-override',
+                '--set', 'csi.volumeMounts[1].mountPath=/vault/override',
+                '--set', 'csi.agent.extraArgs[0]=-config=/vault/override/override.hcl'] }}
+      register: _provider
+      changed_when: _provider.rc == 0
+  rescue:
+    - name: Helm lock cleanup — delete stuck release
+      ansible.builtin.shell: |
+        kubectl -n kube-system delete secret -l "owner=helm,name=openbao-csi,status=pending-install" --ignore-not-found
+
+      register: _cleanup_ob
+      when: _provider.stderr is search("another operation")
+      changed_when: _cleanup_ob.rc == 0
+
+    - name: Helm lock cleanup — log and retry
+      ansible.builtin.debug:
+        msg: "Helm release lock 'openbao-csi' cleared, retrying."
+      when: _provider.stderr is search("another operation")
+
+    - name: Retry Helm upgrade OpenBao CSI Provider
+      ansible.builtin.command:
+        argv: >-
+          {{ ['helm', 'upgrade', '--install', 'openbao-csi', 'openbao/openbao',
+              '--namespace', 'kube-system']
+             + (['--version', openbao_csi_chart_version] if openbao_csi_chart_version | length > 0 else [])
+             + ['--set', 'server.enabled=false',
+                '--set', 'injector.enabled=false',
+                '--set', 'csi.enabled=true',
+                '--set', 'global.externalBaoAddr=' ~ openbao_address,
+                '--set', 'csi.volumes[0].name=openbao-ca',
+                '--set', 'csi.volumes[0].secret.secretName=openbao-ca-tls',
+                '--set', 'csi.volumeMounts[0].name=openbao-ca',
+                '--set', 'csi.volumeMounts[0].mountPath=/vault/ca',
+                '--set', 'csi.volumes[1].name=openbao-agent-override',
+                '--set', 'csi.volumes[1].configMap.name=openbao-csi-agent-override',
+                '--set', 'csi.volumeMounts[1].name=openbao-agent-override',
+                '--set', 'csi.volumeMounts[1].mountPath=/vault/override',
+                '--set', 'csi.agent.extraArgs[0]=-config=/vault/override/override.hcl'] }}
+      register: _provider_retry
+      changed_when: _provider_retry.rc == 0
+      when: _provider.stderr is search("another operation")
+

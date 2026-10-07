@@ -1,0 +1,175 @@
+---
+# Dedicated domain temizliği — cluster SORGUSU tabanlı.
+# Domain'ler: hedef app'lerin cluster'daki Certificate SAN'larından çıkarılır
+#   (sertifikalar silinmeden önce okundu, `_all_target_sans`).
+# Kalan kullanım: cluster'daki TÜM Certificate'ların SAN'larına bakılır.
+# Boşta kalan domain için: OpenBao rolü (GET→DELETE) + ClusterIssuer (get→delete) silinir.
+# Paylaşımlı kaynaklar (`openbao-pki`, `pki-int` mount) ASLA silinmez.
+
+- name: Extract removed domains (first label stripped)
+  ansible.builtin.set_fact:
+    _removed_domains: "{{ (_all_target_sans | default([]) | unique | map('regex_replace', '^[^.]+\\.', '')) | unique | list }}"
+  when: _target_names | length > 0
+
+- name: Read all certificates in the cluster
+  ansible.builtin.shell:
+    cmd: "kubectl get certificates.cert-manager.io -A -o json"
+  register: _all_certs_json
+  changed_when: false
+  failed_when: false
+  when: (_removed_domains | default([])) | length > 0
+
+- name: Fail — could not read certificate list (remaining usage cannot be verified)
+  ansible.builtin.fail:
+    msg: "Could not read cluster certificate list — shared domains must not be deleted (fail-loud)."
+  when: ((_removed_domains | default([])) | length > 0) and (_all_certs_json.rc != 0)
+
+- name: Extract remaining SAN list
+  ansible.builtin.set_fact:
+    _remaining_sans: "{{ ((_all_certs_json.stdout | from_json)['items'] | map(attribute='spec') | selectattr('dnsNames', 'defined') | map(attribute='dnsNames') | flatten) | unique | list }}"
+  when: ((_removed_domains | default([])) | length > 0) and (_all_certs_json.rc == 0)
+
+- name: Identify domains not in use
+  ansible.builtin.set_fact:
+    _cleanup_domains: "{{ _cleanup_domains | default([]) + [item] }}"
+  loop: "{{ _removed_domains | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  when: _remaining_sans | select('search', '\.' + (item | regex_escape) + '$') | list | length == 0
+
+- name: No domain cleanup needed
+  ansible.builtin.debug:
+    msg: "No dedicated domain cleanup needed (in use or not a target)."
+  when: (_cleanup_domains | default([])) | length == 0
+
+- name: Load OpenBao mount config
+  ansible.builtin.slurp:
+    src: "{{ playbook_dir }}/../outputs/openbao/openbao-mount.json"
+  register: _bao_mount
+  delegate_to: localhost
+  become: false
+  when: (_cleanup_domains | default([])) | length > 0
+
+- name: Fail — openbao mount config missing
+  ansible.builtin.fail:
+    msg: "outputs/openbao/openbao-mount.json not found — run 'playbooks/openbao.yml' first."
+  when: ((_cleanup_domains | default([])) | length > 0) and (_bao_mount is failed or _bao_mount is not defined)
+
+- name: Set OpenBao mount values
+  ansible.builtin.set_fact:
+    openbao_pki_int_mount_cfg: "{{ (_bao_mount.content | b64decode | from_json).pki_int_mount }}"
+    openbao_approle_mount_cfg: "{{ (_bao_mount.content | b64decode | from_json).approle_mount }}"
+  when: (_cleanup_domains | default([])) | length > 0
+
+- name: Load pki-manager credentials
+  ansible.builtin.slurp:
+    src: "{{ playbook_dir }}/../outputs/openbao/pki-manager.json"
+  register: _k8s_apps_creds
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: (_cleanup_domains | default([])) | length > 0
+
+- name: Fail — pki-manager credentials missing
+  ansible.builtin.fail:
+    msg: "outputs/openbao/pki-manager.json not found — openbao.yml (k8s/openbao-ops rbac-platform) may not have been run."
+  when: ((_cleanup_domains | default([])) | length > 0) and (_k8s_apps_creds is failed or _k8s_apps_creds is not defined)
+
+- name: Set pki-manager role_id/secret_id
+  ansible.builtin.set_fact:
+    _pki_mgr_role_id: "{{ (_k8s_apps_creds.content | b64decode | from_json).role_id }}"
+    _pki_mgr_secret_id: "{{ (_k8s_apps_creds.content | b64decode | from_json).secret_id }}"
+  no_log: true
+  when: (_cleanup_domains | default([])) | length > 0
+
+- name: OpenBao AppRole login
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/auth/{{ openbao_approle_mount_cfg }}/login"
+    method: POST
+    body_format: json
+    body:
+      role_id: "{{ _pki_mgr_role_id }}"
+      secret_id: "{{ _pki_mgr_secret_id }}"
+    return_content: true
+    validate_certs: false
+  register: _bao_login
+  when: (_cleanup_domains | default([])) | length > 0
+  no_log: true
+
+- name: Set OpenBao client token
+  ansible.builtin.set_fact:
+    _bao_client_token: "{{ _bao_login.json.auth.client_token }}"
+  when: ((_cleanup_domains | default([])) | length > 0) and (_bao_login is defined) and (_bao_login.status == 200)
+  no_log: true
+
+- name: Fail — AppRole login failed
+  ansible.builtin.fail:
+    msg: "pki-manager AppRole login failed — openbao.yml (k8s/openbao-ops rbac-platform) may not have been run."
+  when: ((_cleanup_domains | default([])) | length > 0) and (_bao_client_token is not defined or _bao_client_token | length == 0)
+
+- name: "Query — OpenBao dedicated PKI role"
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/{{ openbao_pki_int_mount_cfg }}/roles/dedicated-{{ item | replace('.', '-') }}"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _bao_client_token }}"
+    validate_certs: false
+    status_code: [200, 404]
+  loop: "{{ _cleanup_domains | default([]) }}"
+  loop_control:
+    label: "dedicated-{{ item | replace('.', '-') }}"
+  register: _role_get
+  when: (_cleanup_domains | default([])) | length > 0
+  changed_when: false
+  no_log: true
+
+- name: "Delete — OpenBao dedicated PKI role (if exists)"
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/{{ openbao_pki_int_mount_cfg }}/roles/dedicated-{{ item.item | replace('.', '-') }}"
+    method: DELETE
+    headers:
+      X-Vault-Token: "{{ _bao_client_token }}"
+    validate_certs: false
+    status_code: [200, 204]
+  loop: "{{ _role_get.results | default([]) }}"
+  loop_control:
+    label: "dedicated-{{ item.item | replace('.', '-') }}"
+  changed_when: false
+  no_log: true
+  when: item.status == 200
+
+- name: "Report — OpenBao role already absent"
+  ansible.builtin.debug:
+    msg: "OpenBao role already absent: dedicated-{{ item.item | replace('.', '-') }}"
+  loop: "{{ _role_get.results | default([]) }}"
+  loop_control:
+    label: "dedicated-{{ item.item | replace('.', '-') }}"
+  when: item.status == 404
+
+- name: Query — ClusterIssuer (dedicated)
+  ansible.builtin.shell:
+    cmd: "kubectl get clusterissuer openbao-pki-{{ item | replace('.', '-') }}"
+  loop: "{{ _cleanup_domains | default([]) }}"
+  loop_control:
+    label: "openbao-pki-{{ item | replace('.', '-') }}"
+  register: _ci_get
+  changed_when: false
+  failed_when: false
+  when: (_cleanup_domains | default([])) | length > 0
+
+- name: Delete — ClusterIssuer (dedicated)
+  ansible.builtin.shell:
+    cmd: "kubectl delete clusterissuer openbao-pki-{{ item.item | replace('.', '-') }}"
+  loop: "{{ _ci_get.results | default([]) }}"
+  loop_control:
+    label: "openbao-pki-{{ item.item | replace('.', '-') }}"
+  changed_when: false
+  when: item.rc == 0
+
+- name: "Report — ClusterIssuer already absent"
+  ansible.builtin.debug:
+    msg: "ClusterIssuer already absent: openbao-pki-{{ item.item | replace('.', '-') }}"
+  loop: "{{ _ci_get.results | default([]) }}"
+  loop_control:
+    label: "openbao-pki-{{ item.item | replace('.', '-') }}"
+  when: item.rc != 0

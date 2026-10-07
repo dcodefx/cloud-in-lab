@@ -1,0 +1,163 @@
+---
+# Çalıştırma örnekleri (tek app/chart dahil): docs/tr/architecture/k8s-apps-design-v2.md §17.1
+# ============================================
+# Generic Apps (app-deploy)
+# ============================================
+# name (zorunlu), image (zorunlu), kind (deployment|statefulset|job|cronjob)
+# hostnames, port, env, resources, probes, volumes, affinity...
+# Detaylı örnek: K8S-APPS-TASARIM-NOTLARI.md, §13
+#
+# §7 self-service RBAC için (plan openbao-rbac-final-plan.md):
+#   openbao:
+#     enable: true/false      # false/yoksa blok yok sayılır
+#     profile: reader|metrics-reader|operator|job-run|transit-user|deployer|kv-owner|db-consumer|none
+#                             # (W1–W8 seçilebilir; P/S kimlikleri app seçemez)
+#     scope: myapp            # opsiyonel, verilmezse name alınır
+#     scope_level: app|namespace   # opsiyonel, varsayılan: app
+
+apps:
+  - name: echo-server
+    enable: true
+    state: absent
+    image: ealen/echo-server:latest
+    hostnames: ["echo"]
+    namespace: demo
+    port: 80
+    templateLabels:
+      ingress-exposed: "true"
+
+  - name: echo2-server
+    enable: true
+    state: absent
+    image: ealen/echo-server:latest
+    hostnames: ["echo2"]
+    namespace: demo
+    port: 80
+    templateLabels:
+      ingress-exposed: "true"
+    tls:
+      mode: dedicated
+
+  - name: echo3-server
+    enable: true
+    state: absent
+    image: ealen/echo-server:latest
+    hostnames: ["echo3.lab.internal"]
+    namespace: demo
+    port: 80
+    use_base_domain: false
+    templateLabels:
+      ingress-exposed: "true"
+    tls:
+      mode: dedicated
+      keyAlgorithm: ECDSA
+      keySize: 384
+
+  # Faz 2 A-adimi: baglanti + auth + transit uc kaniti (Yol 2 CSI-AppRole).
+  # Imaj: python stdlib-only (pip yok, ek egress yok). B-adimi (envelope.py + pip)
+  # A PASS sonrasi ayni iskelete eklenir. Digest 2026-09-09 registry'den kilitli.
+  # Ortak plumbing common/templates/job.yaml.j2'de (openbao blokları ile),
+  # script templated/transit-envelope-demo/files/connectivity.py'da.
+  - name: transit-envelope-demo
+    enable: true
+    kind: job    
+    namespace: transit-demo
+    state: absent
+    image: python:3.13-slim-bookworm@sha256:ed86c82274b3c69b52fb5820f358f0bd7df0b603332063cb5c6e32bd220c3e6e   
+    openbao:                   # OpenBao tarafında §7 self-service credential üretimi (ayrı katman)
+      enable: true
+      profile: transit-user
+
+  # Faz 2 B-adimi: gercek envelope (datakey -> yerelde AES-GCM).
+  # A-adimi (transit-envelope-demo) ornek olarak durur.
+  # Pin build gununde cozuldu: cryptography==50.0.1.
+  - name: transit-envelope-b
+    enable: true
+    kind: job
+    namespace: transit-demo
+    state: absent
+    image: python:3.13-slim-bookworm@sha256:ed86c82274b3c69b52fb5820f358f0bd7df0b603332063cb5c6e32bd220c3e6e
+    backoffLimit: 2
+    ttlSecondsAfterFinished: 3600
+    activeDeadlineSeconds: 600
+    restartPolicy: Never
+    openbao:
+      enable: true
+      profile: transit-user
+    command: ["/bin/sh", "-c"]
+    args: ["pip install --no-cache-dir cryptography==50.0.1 && python /scripts/envelope.py"]
+    egress_fqdn:
+      - match: "pypi.org"
+      - pattern: "*.pythonhosted.org"
+        ports: [443]
+
+  - name: openbao-metrics-exporter
+    enable: true
+    namespace: monitoring
+    state: absent
+    image: python:3.11-slim-bookworm
+    container_port: 9090
+    port: 9090
+    expose: false
+    openbao:
+      enable: true
+      profile: metrics-reader
+    labels:
+      homelab.io/allow-openbao-egress: "true"
+    monitoring:
+      serviceMonitor:
+        enabled: true
+        port: 9090
+        path: /metrics
+        interval: 30s
+        scrapeTimeout: 10s
+
+# ============================================
+# Prometheus Stack (kube-prometheus-stack)
+# ============================================
+# enable: tüm play'i aktif/pasif eder
+# Her component: enabled + subdomain
+# service isimleri release_name'den türetilir
+# enabled false ise hem Helm values'a false gider hem route oluşturulmaz
+
+charted:
+  prom_stack:
+    enable: true
+    release_name: kube-prom-stack
+    namespace: monitoring
+
+    prometheus:
+      # service: release_name'den türetilir → kube-prom-stack-prometheus
+      subdomain: prometheus
+      port: 9090
+
+    grafana:
+      enabled: true
+      # service: release_name'den türetilir → kube-prom-stack-grafana
+      subdomain: grafana
+      port: 80
+      # Grafana admin parolası — boş bırakılırsa Helm rastgele üretir (Vault kullanılmıyor).
+      # Üretimde bu değeri güçlü bir parola ile override edin.
+      admin_password: "ChangeMe-2026"
+
+    alertmanager:
+      enabled: true
+      # service: release_name'den türetilir → kube-prom-stack-alertmanager
+      subdomain: alertmanager
+      port: 9093
+
+    # Backup metrik isleri maintenance rolunde: dis scrape (ServiceMonitor
+    # + egress CNP) ve alert kurallari roles/maintenance → monitoring.yml.
+
+    # Örnek — Longhorn persistence (Longhorn + SC kurulmadan AÇMA: PVC Pending'de kalır).
+    # helm_values altına yazılan her şey values.yaml'a birebir basılır (passthrough).
+    # helm_values:
+    #   prometheus:
+    #     prometheusSpec:
+    #       storageSpec:
+    #         volumeClaimTemplate:
+    #           spec:
+    #             storageClassName: longhorn
+    #             resources:
+    #               requests:
+    #                 storage: 50Gi

@@ -1,0 +1,80 @@
+---
+# Hedef: {{ target_name }} — Bul/Rapor/Sil:
+#   1) Bul: tip listesi cluster'dan dinamik (api-resources), seçici
+#      managed-by=app-deploy,name=<hedef> ile -o name listesi alınır.
+#   2) Rapor: liste loga basılır. 3) Sil: yalnız listedekiler silinir.
+# ns vars'tan gelir (deploy ile aynı default). Aynı ns'teki başka app farklı
+# name etiketi taşır → listeye girmez, dokunulmaz. Liste boşsa silme koşmaz.
+# Tek istisna: cert-manager'ın ürettiği <app>-tls Secret'ı eski sürümlerde
+# etiketsiz doğuyordu; aşağıdaki isim bazlı silme yalnız bu kalıntılar içindir.
+# Yeni sertifikalar secretTemplate.labels ile etiketi taşır (label keşfine düşer).
+
+- name: Load target app record (inventory)
+  ansible.builtin.set_fact:
+    _app: "{{ target_app | default({}) }}"
+
+- name: Fail — target not in inventory
+  ansible.builtin.fail:
+    msg: "Target '{{ target_name }}' not found in apps[] — namespace unknown."
+  when: (_app | default({})).name is not defined
+
+- name: Target namespace (same default as deploy)
+  ansible.builtin.set_fact:
+    _ns: "{{ _app.namespace | default(_app.name) }}"
+
+- name: Read target certificate SANs (before delete)
+  ansible.builtin.shell:
+    cmd: "kubectl get certificates.cert-manager.io -n {{ _ns }} -l app.kubernetes.io/managed-by=app-deploy,app.kubernetes.io/name={{ target_name }} -o jsonpath='{range .items[*]}{range .spec.dnsNames[*]}{@}{\"\\n\"}{end}{end}'"
+  register: _cert_sans
+  changed_when: false
+  failed_when: false
+
+- name: Record SANs
+  ansible.builtin.set_fact:
+    _all_target_sans: "{{ (_all_target_sans | default([]) + (_cert_sans.stdout_lines | default([]) | reject('equalto', ''))) | unique | list }}"
+
+- name: Delete TLS secret leftover (cert-manager, label-less orphan)
+  ansible.builtin.shell:
+    cmd: "kubectl delete secret -n {{ _ns }} {{ target_name }}-tls --ignore-not-found=true"
+  changed_when: false
+  failed_when: false
+  when: (_app.kind | default('deployment')) in ['deployment', 'statefulset'] and ((_app.tls | default({})).mode | default('shared')) == 'dedicated' and (_app.expose | default(true) | bool)
+
+- name: List objects to delete (preview, -o name)
+  ansible.builtin.shell:
+    cmd: "kubectl get {{ _all_kinds }} -n {{ _ns }} -l app.kubernetes.io/managed-by=app-deploy,app.kubernetes.io/name={{ target_name }} -o name"
+  register: _found
+  changed_when: false
+  failed_when: false
+
+- name: WARNING — listing failed
+  ansible.builtin.debug:
+    msg: "WARNING: {{ target_name }} ({{ _ns }}) could not be listed (rc={{ _found.rc }}): {{ _found.stderr | default('') }}"
+  when: _found.rc != 0
+
+- name: Report — objects to delete
+  ansible.builtin.debug:
+    msg: "{{ target_name }} ({{ _ns }}): to delete {{ _n }} object(s){{ (' — ' + (_found.stdout_lines | join(', '))) if (_n | int > 0) else ' none, skipping' }}"
+  vars:
+    _n: "{{ _found.stdout_lines | default([]) | reject('equalto', '') | list | length }}"
+
+- name: Delete listed objects
+  ansible.builtin.shell:
+    cmd: "kubectl delete {{ _found.stdout_lines | reject('equalto', '') | join(' ') }} -n {{ _ns }}"
+  register: _del
+  changed_when: false
+  failed_when: false
+  when: (_found.stdout_lines | default([]) | reject('equalto', '') | list | length > 0)
+
+- name: Report objects that could not be deleted
+  ansible.builtin.debug:
+    msg: "WARNING: {{ item.item }} could not be deleted (rc={{ item.rc }}): {{ (item.stderr | default('')) + (item.stdout | default('')) }}"
+  loop: "{{ _del.results | default([]) | selectattr('rc', 'ne', 0) | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: "Rapor — {{ target_name }}"
+  ansible.builtin.debug:
+    msg: "{{ target_name }} ({{ _ns }}): {{ _deleted | length }} object(s) deleted"
+  vars:
+    _deleted: "{{ _del.results | default([]) | map(attribute='stdout_lines', default=[]) | flatten | select('search', 'deleted') | list }}"

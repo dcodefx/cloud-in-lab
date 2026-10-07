@@ -1,0 +1,15 @@
+[Unit]
+Description=Laws AWS Emulator
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={{ laws_bin_path }} --host {{ laws_host }} --port {{ laws_port }}
+Restart=always
+RestartSec=5
+User=root
+Environment=LAWS_PORT={{ laws_port }}
+Environment=LAWS_HOST={{ laws_host }}
+
+[Install]
+WantedBy=multi-user.target

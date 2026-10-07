@@ -1,0 +1,142 @@
+---
+# ── 10) node_exporter — non-K8s hosts (K8s master uses DaemonSet M1) ─────
+- name: node_exporter package (distro — non-K8s hosts)
+  when: inventory_hostname in m_exporter_hosts
+  ansible.builtin.package:
+    name: prometheus-node-exporter
+    state: present
+
+- name: node_exporter systemd drop-in directory (template creates no parents)
+  when: inventory_hostname in m_exporter_hosts
+  ansible.builtin.file:
+    path: "/etc/systemd/system/prometheus-node-exporter.service.d"
+    state: directory
+    mode: "0755"
+
+- name: node_exporter systemd drop-in (textfile dir + listen address)
+  when: inventory_hostname in m_exporter_hosts
+  ansible.builtin.template:
+    src: node-exporter-override.conf.j2
+    dest: "/etc/systemd/system/prometheus-node-exporter.service.d/{{ maintenance.project_name }}.conf"
+    mode: "0644"
+  notify:
+    - systemd reload
+    - node_exporter restart
+
+- name: node_exporter enable + start
+  when: inventory_hostname in m_exporter_hosts
+  ansible.builtin.systemd:
+    name: prometheus-node-exporter
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# ── Backup/Restore PrometheusRule lifecycle (owner: maintenance) ─────────
+# Independent of the chart deploy: no helm, plain CR apply (discovered via the
+# operator label). run_once through k8s-master-1 — does not depend on the
+# controller kubeconfig (admin.conf + kubectl are guaranteed on the master).
+# Fragment selection is PROGRAMATIC in the wrapper (templates/alerts/maintenance.yaml.j2):
+# it runs when AT LEAST ONE of the backup/restore flags is on (with both off the
+# groups would be empty — an invalid object).
+- name: Render maintenance PrometheusRule
+  when: (maintenance.backup.alerts_enabled | default(false)) or (maintenance.restore.enabled | default(false))
+  ansible.builtin.template:
+    src: alerts/maintenance.yaml.j2
+    dest: "/tmp/{{ maintenance.project_name }}-maintenance-alerts.yaml"
+    mode: "0644"
+  delegate_to: k8s-master-1
+  run_once: true
+
+- name: Apply maintenance PrometheusRule
+  when: (maintenance.backup.alerts_enabled | default(false)) or (maintenance.restore.enabled | default(false))
+  ansible.builtin.shell: |
+    kubectl --kubeconfig /etc/kubernetes/admin.conf apply -f /tmp/{{ maintenance.project_name }}-maintenance-alerts.yaml
+  delegate_to: k8s-master-1
+  run_once: true
+  register: _m_alert_apply
+  changed_when: "'created' in _m_alert_apply.stdout or 'configured' in _m_alert_apply.stdout"
+
+# ── 11) Off-cluster node-exporter scrape (Service+Endpoints, ServiceMonitor, egress CNP) ──
+# The static scrape block in prom_stack values was REMOVED (no ini dependency):
+# the targets are derived from the inventory, and the apply uses the SAME
+# channel as the PrometheusRule (k8s-master-1 + kubectl). Single gate: main.yml
+# enters this file via backup.enabled; no enable repetition here.
+- name: Collect external exporter target IPs (garage + openbao)
+  ansible.builtin.set_fact:
+    m_external_exporter_ips: "{{ (groups.get('garage-backup', []) + groups.get('openbao', [])) | map('extract', hostvars, ['ansible_host']) | unique | list }}"
+  run_once: true
+
+- name: Check external exporter target IPs
+  ansible.builtin.debug:
+    var: m_external_exporter_ips
+  run_once: true
+
+- name: Render external exporter Service + Endpoints
+  when: m_external_exporter_ips | length > 0
+  ansible.builtin.template:
+    src: external-exporters-endpoints.yaml.j2
+    dest: "/tmp/{{ maintenance.project_name }}-external-exporters.yaml"
+    mode: "0644"
+  delegate_to: k8s-master-1
+  run_once: true
+
+- name: Apply external exporter Service + Endpoints
+  when: m_external_exporter_ips | length > 0
+  ansible.builtin.shell: |
+    kubectl --kubeconfig /etc/kubernetes/admin.conf apply -f /tmp/{{ maintenance.project_name }}-external-exporters.yaml
+  delegate_to: k8s-master-1
+  run_once: true
+  register: _m_ext_ep_apply
+  changed_when: "'created' in _m_ext_ep_apply.stdout or 'configured' in _m_ext_ep_apply.stdout"
+
+- name: Render external node-exporter ServiceMonitor
+  when: m_external_exporter_ips | length > 0
+  ansible.builtin.template:
+    src: external-exporter-servicemonitor.yaml.j2
+    dest: "/tmp/{{ maintenance.project_name }}-external-exporter-sm.yaml"
+    mode: "0644"
+  delegate_to: k8s-master-1
+  run_once: true
+
+- name: Apply external node-exporter ServiceMonitor
+  when: m_external_exporter_ips | length > 0
+  ansible.builtin.shell: |
+    kubectl --kubeconfig /etc/kubernetes/admin.conf apply -f /tmp/{{ maintenance.project_name }}-external-exporter-sm.yaml
+  delegate_to: k8s-master-1
+  run_once: true
+  register: _m_ext_sm_apply
+  changed_when: "'created' in _m_ext_sm_apply.stdout or 'configured' in _m_ext_sm_apply.stdout"
+
+- name: Render scrape egress CiliumNetworkPolicy
+  when: m_external_exporter_ips | length > 0
+  ansible.builtin.template:
+    src: external-exporter-egress.yaml.j2
+    dest: "/tmp/{{ maintenance.project_name }}-external-exporter-egress.yaml"
+    mode: "0644"
+  delegate_to: k8s-master-1
+  run_once: true
+
+- name: Apply scrape egress CiliumNetworkPolicy
+  when: m_external_exporter_ips | length > 0
+  ansible.builtin.shell: |
+    kubectl --kubeconfig /etc/kubernetes/admin.conf apply -f /tmp/{{ maintenance.project_name }}-external-exporter-egress.yaml
+  delegate_to: k8s-master-1
+  run_once: true
+  register: _m_ext_eg_apply
+  changed_when: "'created' in _m_ext_eg_apply.stdout or 'configured' in _m_ext_eg_apply.stdout"
+
+- name: "Clean up rendered manifests on k8s-master-1 (no /tmp leftovers)"
+  when: >-
+    (maintenance.backup.alerts_enabled | default(false))
+    or (maintenance.restore.enabled | default(false))
+    or (m_external_exporter_ips | default([]) | length > 0)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/tmp/{{ maintenance.project_name }}-maintenance-alerts.yaml"
+    - "/tmp/{{ maintenance.project_name }}-external-exporters.yaml"
+    - "/tmp/{{ maintenance.project_name }}-external-exporter-sm.yaml"
+    - "/tmp/{{ maintenance.project_name }}-external-exporters-egress.yaml"
+  delegate_to: k8s-master-1
+  run_once: true

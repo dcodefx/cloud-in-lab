@@ -1,0 +1,14 @@
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: global-allow-gateway-egress
+spec:
+  description: "Gateway (reserved:ingress) -> ingress-exposed pod'lara egress izni"
+  endpointSelector:
+    matchExpressions:
+      - key: reserved:ingress
+        operator: Exists
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:ingress-exposed: "true"

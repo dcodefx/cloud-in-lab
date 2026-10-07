@@ -1,0 +1,10 @@
+---
+- name: Import OpenBao playbook
+  ansible.builtin.import_playbook: playbooks/openbao.yml
+
+- name: Import K8s cluster playbook
+  ansible.builtin.import_playbook: playbooks/k8s.yml
+
+# Floci ve Laws ayri calistirilir — wrapper'a dahil degil
+# ansible-playbook -i inventory/floci.ini.generated playbooks/floci.yml
+# ansible-playbook -i inventory/laws.ini.generated playbooks/laws.yml

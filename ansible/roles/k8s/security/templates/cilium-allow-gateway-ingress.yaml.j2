@@ -1,0 +1,12 @@
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: global-allow-gateway-ingress
+spec:
+  description: "Gateway Proxy'den ingress-exposed label'li pod'lara gecis saglar"
+  endpointSelector:
+    matchLabels:
+      k8s:ingress-exposed: "true"
+  ingress:
+  - fromEntities:
+    - ingress

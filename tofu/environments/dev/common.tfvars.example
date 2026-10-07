@@ -1,0 +1,16 @@
+# Dev Ortamı - Ortak Değerler
+# Kullanım: tofu init -backend-config=backends/KSTACK.backend.tfbackend
+#          tofu apply -var-file=environments/dev/common.tfvars -var-file=environments/dev/KSTACK.tfvars
+
+environment    = "dev"
+target_node    = "pve"
+template_vm_id = 9010
+
+base_ip   = "164.102.98.0"
+ip_mask   = "24"
+gateway   = "164.102.98.70"
+
+ssh_pub_key_path = "~/.ssh/id_ed25519.pub"
+
+proxmox_endpoint = "https://<PROXMOX_HOST>:8006"
+proxmox_token    = "<PROXMOX_API_TOKEN>"

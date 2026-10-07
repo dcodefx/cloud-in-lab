@@ -1,0 +1,101 @@
+---
+- name: Load kernel modules
+  ansible.builtin.shell: |
+    modprobe {{ item }}
+  loop: "{{ kernel_modules }}"
+  changed_when: false
+
+- name: Persist kernel modules
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/k8s.conf
+    content: |
+      overlay
+      br_netfilter
+    mode: "0644"
+
+- name: Install containerd (Debian)
+  ansible.builtin.apt:
+    name:
+      - containerd
+    state: present
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Download crictl binary
+  ansible.builtin.get_url:
+    url: "https://github.com/kubernetes-sigs/cri-tools/releases/download/v{{ crictl_version }}/crictl-v{{ crictl_version }}-linux-amd64.tar.gz"
+    dest: /tmp/crictl.tar.gz
+    mode: "0644"
+    checksum: "{{ crictl_checksum }}"
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Extract crictl binary
+  ansible.builtin.unarchive:
+    src: /tmp/crictl.tar.gz
+    dest: /usr/local/bin
+    remote_src: true
+    include:
+      - crictl
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Install containerd (RedHat)
+  ansible.builtin.dnf:
+    name:
+      - containerd
+    state: present
+  when: ansible_facts['os_family'] == "RedHat"
+
+- name: Download crictl binary (RedHat)
+  ansible.builtin.get_url:
+    url: "https://github.com/kubernetes-sigs/cri-tools/releases/download/v{{ crictl_version }}/crictl-v{{ crictl_version }}-linux-amd64.tar.gz"
+    dest: /tmp/crictl.tar.gz
+    mode: "0644"
+    checksum: "{{ crictl_checksum }}"
+  when: ansible_facts['os_family'] == "RedHat"
+
+- name: Extract crictl binary (RedHat)
+  ansible.builtin.unarchive:
+    src: /tmp/crictl.tar.gz
+    dest: /usr/local/bin
+    remote_src: true
+    include:
+      - crictl
+  when: ansible_facts['os_family'] == "RedHat"
+
+- name: Create containerd config directory
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    mode: "0755"
+
+- name: Configure containerd (SystemdCgroup + pinned sandbox image)
+  ansible.builtin.template:
+    src: config.toml.j2
+    dest: /etc/containerd/config.toml
+    mode: "0644"
+  notify: Restart containerd
+
+- name: Enable and start containerd
+  ansible.builtin.systemd:
+    name: containerd
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Flush handlers to apply containerd config
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for containerd service to be active
+  ansible.builtin.shell: systemctl is-active containerd
+  register: _containerd_active
+  until: _containerd_active.stdout == "active"
+  retries: 6
+  delay: 5
+  changed_when: false
+
+- name: Wait for CRI plugin to be ready
+  ansible.builtin.shell: crictl ps > /dev/null 2>&1
+  register: _cri_ready
+  until: _cri_ready is success
+  retries: 12
+  delay: 5
+  changed_when: false

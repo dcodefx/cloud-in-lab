@@ -1,0 +1,7 @@
+---
+base_domain: "tofu.lan"
+gateway_hostname: "homelab-gateway"
+gateway_namespace: "kube-system"
+openbao_key: app-key
+expose: true
+monitoring_service_monitor_enabled: false

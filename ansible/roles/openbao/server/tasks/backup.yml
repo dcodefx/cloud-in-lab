@@ -1,0 +1,113 @@
+---
+# ── Raft snapshot yedekleme — iki katman ──────────────────────────────────
+# 1) Yerel kopya  : /var/lib/bao-raft-snaps  (7 gün, retention)
+# 2) Uzak kopya   : maintenance/backup/app-data/backup-openbao.sh → restic
+#                  → Garage2 (openbao-daily / weekly / monthly kovaları)
+#
+# Kimlik: root token YOK. `bao agent` (auto_auth/AppRole) unix socket üzerinden
+# kimlik yönetir; snapshot script'i token taşımaz. Policy/roller:
+# roles/openbao/security → openbao-rbac.md P5 (agent) + P6 (restore).
+#
+# EMEKLİ (2026-09-28, session-080): aşağıdaki 3 task kaldırıldı —
+#   - Create backup directory  ({{ openbao_backup_dir }})
+#   - Deploy backup script     (templates/bao-backup.sh.j2 → /usr/local/bin/bao-backup.sh)
+#   - Setup daily backup cron   (root crontab, 0 3 * * *)
+# Sebep: bao-backup.sh token'siz `bao operator raft snapshot save` çağırıyordu
+# (şablonun 16. satırı) → her gece 403 + set -e ile ölüyordu. Yerini bu
+# katman + maintenance job'ı aldı.
+# geri almak istersen: templates/bao-backup.sh.j2 dosyada DURUYOR, yalnız
+# defaults/main.yml'deki openbao_backup_* değişkenleri yorum satırında.
+# Erişim/roller: docs/tr/openbao/openbao-rbac.md §2 (B10/B11), §3 (P5/P6).
+
+# Tek liste: policy adı = rol adı = credential dosyası = dosya ön eki.
+- name: Resolve raft credential roles (agent + restore)
+  ansible.builtin.set_fact:
+    _raft_cred_roles: "{{ [openbao_raft_agent_role, openbao_raft_restore_role] }}"
+  changed_when: false
+
+# ── 0) Fail-fast: controller'da credential var mı? ────────────────────────
+# Desen: roles/maintenance/tasks/restic.yml:38-60 (stat → fail). Burada da
+# bootstrap bu role'ün SON adımı olduğu için eksik dosya ancak burada yakalanır.
+- name: Check raft AppRole credentials (controller)
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/../outputs/openbao/{{ item }}.json"
+  delegate_to: localhost
+  become: false
+  loop: "{{ _raft_cred_roles }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _raft_cred_stat
+
+- name: Raft AppRole credentials MISSING — stop
+  ansible.builtin.fail:
+    msg: >-
+      Controller'da eksik: {{ _raft_cred_stat.results | rejectattr('stat.exists') | list | map(attribute='item') | join(', ') }}
+      → ansible/outputs/openbao/<role>.json
+      Bu dosyalar rbac-platform.yml credential loop'u tarafından üretilir
+      ({{ openbao_platform_credentials | join(', ') }}).
+      Önce bootstrap'u çalıştır: ansible-playbook ansible/playbooks/openbao.yml
+  when: (_raft_cred_stat.results | rejectattr('stat.exists') | list | length) > 0
+
+# ── 1) Yerel snapshot dizini (raft veri dizininden BİLEREK ayrı) ───────────
+- name: Create raft snapshot directory
+  ansible.builtin.file:
+    path: "{{ openbao_raft_snap_dir }}"
+    state: directory
+    owner: "{{ openbao_user }}"
+    group: "{{ openbao_group }}"
+    mode: "0750"
+
+# ── 2) Credential dağıtımı (0640, bao:bao) ────────────────────────────────
+# Agent bunları okur; 0644 DEĞİL (resmi config 0640 kullanıyor).
+# 0640 + bao:bao → yalnız bao grubu. Backup script'i root olduğu için
+# restore credential'ını da okuyabilir.
+- name: Deploy raft AppRole role-id
+  ansible.builtin.copy:
+    content: "{{ (lookup('ansible.builtin.file', playbook_dir + '/../outputs/openbao/' + item + '.json') | from_json)['role_id'] }}"
+    dest: "{{ openbao_config_dir }}/snap-{{ item }}-roleid"
+    owner: "{{ openbao_user }}"
+    group: "{{ openbao_group }}"
+    mode: "0640"
+  no_log: true
+  loop: "{{ _raft_cred_roles }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Deploy raft AppRole secret-id
+  ansible.builtin.copy:
+    content: "{{ (lookup('ansible.builtin.file', playbook_dir + '/../outputs/openbao/' + item + '.json') | from_json)['secret_id'] }}"
+    dest: "{{ openbao_config_dir }}/snap-{{ item }}-secretid"
+    owner: "{{ openbao_user }}"
+    group: "{{ openbao_group }}"
+    mode: "0640"
+  no_log: true
+  loop: "{{ _raft_cred_roles }}"
+  loop_control:
+    label: "{{ item }}"
+
+# ── 3) Agent config + unit ────────────────────────────────────────────────
+- name: Deploy raft snapshot agent config
+  ansible.builtin.template:
+    src: bao-raft-agent.hcl.j2
+    dest: "{{ openbao_config_dir }}/bao-raft-agent.hcl"
+    owner: "{{ openbao_user }}"
+    group: "{{ openbao_group }}"
+    mode: "0640"
+  notify: restart bao-raft-agent
+
+- name: Deploy raft snapshot agent unit
+  ansible.builtin.template:
+    src: bao-raft-agent.service.j2
+    dest: "/etc/systemd/system/bao-raft-agent.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart bao-raft-agent
+
+# ── 4) Servisi başlat ─────────────────────────────────────────────────────
+- name: Enable and start raft snapshot agent
+  ansible.builtin.systemd:
+    name: bao-raft-agent
+    enabled: true
+    state: started
+    daemon_reload: true

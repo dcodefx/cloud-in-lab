@@ -1,0 +1,17 @@
+---
+# K8s Apps — Remove
+# app-deploy (apply) yalnız `enable`'a, app-remove yalnız `state`'e bakar.
+# Hedef: apps[] içinde `state: absent` veya CLI `-e remove="app1,app2"`.
+# Namespace, içinde başka app kalmamışsa silinir; silmeler deterministiktir.
+
+- import_playbook: pre/connect.yml
+- import_playbook: pre/env-check.yml
+- import_playbook: pre/openbao-env-check.yml
+
+- name: K8s Apps — Remove
+  hosts: k8s_master[0]
+  become: false
+  environment: "{{ kubeconfig_env }}"
+  roles:
+    - role: ../roles/k8s-apps/app-remove
+      tags: ['apps']

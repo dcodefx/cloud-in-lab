@@ -1,0 +1,35 @@
+---
+# Çalıştırma örnekleri (tek app/chart dahil): docs/tr/architecture/k8s-apps-design-v2.md §17.1
+- import_playbook: pre/connect.yml
+- import_playbook: pre/env-check.yml
+# openbao-env-check: openbao_address fact'i gerekli (openbao enable app'ler).
+- import_playbook: pre/openbao-env-check.yml
+  tags: ['apps']
+
+- name: K8s Apps - Dedicated PKI domains pre-check
+  hosts: k8s_master[0]
+  become: false
+  environment: "{{ kubeconfig_env }}"
+  tasks:
+    - ansible.builtin.include_tasks: ../roles/k8s-apps/app-deploy/tasks/dedicated-pki-domains.yml
+      tags: ['apps']
+      when: apps | selectattr('enable', 'equalto', true) | selectattr('tls', 'defined') | selectattr('tls.mode', 'equalto', 'dedicated') | selectattr('use_base_domain', 'defined') | rejectattr('use_base_domain', 'equalto', true) | list | length > 0
+
+- name: K8s Apps - Charted
+  hosts: k8s_master[0]
+  become: false
+  environment: "{{ kubeconfig_env }}"
+  roles:
+    - role: ../roles/k8s-apps/chart-deploy
+      tags: ['charted']
+
+
+- name: K8s Apps - Generic applications
+  hosts: k8s_master[0]
+  become: false
+  environment: "{{ kubeconfig_env }}"
+  roles:
+    - role: ../roles/k8s-apps/app-deploy
+      tags: ['apps']
+
+

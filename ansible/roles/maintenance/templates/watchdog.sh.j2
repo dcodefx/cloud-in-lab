@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+{{ '#' }} watchdog.sh — INDEPENDENT "did it run" check (produced by roles/maintenance)
+{{ '#' }} Reads systemd's OWN journal records (Result / ExecMainExitTimestamp / timer
+{{ '#' }} trigger) SEPARATELY from each script's own .state/.prom records:
+{{ '#' }} catches scripts that cannot write metrics, broken timers, runs never started.
+{{ '#' }} Output: {{ m_metrics }}/watchdog.prom
+{{ '#' }}
+{{ '#' }} LABEL: job= is RESERVED by Prometheus — the scrape target's own job= is
+{{ '#' }} overwritten by the scrape job (honor_labels=false by default), which made every
+{{ '#' }} backup job report as job="node-exporter"/"external-node-exporter". All
+{{ '#' }} backup metrics use backup_job= instead; alert rules match on that.
+
+set -u
+JOBS_FILE="{{ m_conf }}/backup/watchdog.jobs"
+d="{{ m_metrics }}"
+mkdir -p "$d" 2>/dev/null || exit 0
+now=$(date +%s)
+tmp="${d}/.watchdog.$$"
+
+: > "$tmp"
+
+echo '# HELP backup_job_systemd_status health of the last systemd run: 1=ok 0=problem' >> "$tmp"
+echo '# TYPE backup_job_systemd_status gauge' >> "$tmp"
+echo '# HELP backup_job_last_systemd_run_timestamp_seconds exit time of the last run (unix epoch)' >> "$tmp"
+echo '# TYPE backup_job_last_systemd_run_timestamp_seconds gauge' >> "$tmp"
+
+while IFS='|' read -r job unit interval tol; do
+    # Yorum satırları (watchdog.jobs.j2 başlığı) job DEĞİLDİR — "# format: ..." satırı
+    # daha önce gerçek bir seri olarak yazılıyordu.
+    case "$job" in ''|\#*) continue ;; esac
+    svc="${unit}.service"
+
+    result="$(systemctl show "$svc" -p Result --value 2>/dev/null | head -1)"
+    exit_ts="$(systemctl show "$svc" -p ExecMainExitTimestamp --value 2>/dev/null | head -1)"
+
+    last=0
+    if [ -n "$exit_ts" ] && [ "$exit_ts" != "n/a" ]; then
+        last=$(date -d "$exit_ts" +%s 2>/dev/null || echo 0)
+    fi
+
+    # Başarısızlık tespiti: Result yalnız unit-state'e bakar ve "failed" YALNIZCA
+    # start-limit-hit anlamına gelir. Bir script `exit 1` yaptığında Result=exit-code
+    # olur; eski `[ "$result" = "failed" ]` karşılaştırması hiç eşleşmediği için
+    # BAŞARISIZ job'lar 1=ok raporlanıyordu. Kaynak: ExecMainStatus (0=başarılı).
+    status=1
+    if [ -n "$result" ] && [ "$result" != "success" ]; then
+        status=0
+    elif [ "$last" -eq 0 ]; then
+        status=0
+    elif [ "$(( now - last ))" -gt "$(( (interval + tol) * 3600 ))" ]; then
+        status=0
+    fi
+
+    printf 'backup_job_systemd_status{backup_job="%s"} %s\n' "$job" "$status" >> "$tmp"
+    printf 'backup_job_last_systemd_run_timestamp_seconds{backup_job="%s"} %s\n' "$job" "$last" >> "$tmp"
+done < "$JOBS_FILE"
+
+echo '# TYPE backup_watchdog_last_run gauge' >> "$tmp"
+printf 'backup_watchdog_last_run_timestamp_seconds %s\n' "$now" >> "$tmp"
+
+mv -f "$tmp" "${d}/watchdog.prom" 2>/dev/null || rm -f "$tmp"
+exit 0

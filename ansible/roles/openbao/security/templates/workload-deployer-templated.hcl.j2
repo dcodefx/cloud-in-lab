@@ -1,0 +1,12 @@
+# W6 deployer: B0+self-care + B2+kv-write (CI/yazıcı, 15m TTL)
+# Token renewable=false. KV write-only, transit yok.
+
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "secret/data/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}/*" {
+  capabilities = ["create", "update", "patch"]
+}
+path "secret/metadata/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}/*" {
+  capabilities = ["list", "read"]
+}

@@ -1,0 +1,12 @@
+---
+# transit-envelope-demo — app'e özgü OpenBao değerleri (tek kaynak).
+# Generic motor (app-deploy) buradaki anahtarları okur; transit'e özgü
+# hiçbir sabit motor dosyalarında veya common/ şablonlarında yer almaz.
+openbao_spc_role: k8s-csi-provider
+openbao_scripts_cm: transit-envelope-demo-scripts
+openbao_script_file: connectivity.py
+openbao_mount: transit
+# Transit key suffix: ob_scope (app.name) + openbao_key → transit-envelope-demo-app-key
+openbao_key: app-key
+openbao_approle_role_id_path: /mnt/approle/role_id
+openbao_approle_secret_id_path: /mnt/approle/secret_id

@@ -1,0 +1,10 @@
+---
+- name: Install dependencies (RedHat)
+  ansible.builtin.dnf:
+    name:
+      - curl
+      - unzip
+      - gnupg2
+      - openssl
+      - jq
+    state: present

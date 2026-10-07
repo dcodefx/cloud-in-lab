@@ -1,0 +1,42 @@
+---
+# ============================================
+# Gateway: main-gateway (allowedRoutes: Selector)
+# Tür: gateway.networking.k8s.io/v1 / Gateway
+# Katman: Routing (Gateway API)
+# ============================================
+# Ne işe yarar:
+#   Sadece belirli bir label'a sahip namespace'lerdeki
+#   HTTPRoute'ların bu Gateway'e bağlanmasına izin verir.
+#
+# allowedRoutes.namespaces.from: Selector
+#   - from: Selector ile matchLabels birlikte kullanılır.
+#   - Sadece gateway-access: "true" label'ı olan
+#     namespace'ler HTTPRoute bağlayabilir.
+#   - En güvenli ve önerilen seçenek.
+#
+# Kullanım:
+#   - Multi-tenant cluster'lar
+#   - Production ortamları
+#   - Erişim kontrolü gereken durumlar
+#
+# Namespace'e label ekleme:
+#   kubectl label namespace monitoring gateway-access=true
+# ============================================
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: main-gateway
+  namespace: infra-system
+spec:
+  gatewayClassName: cilium
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+    allowedRoutes:
+      namespaces:
+        from: Selector
+        selector:
+          matchLabels:
+            gateway-access: "true"

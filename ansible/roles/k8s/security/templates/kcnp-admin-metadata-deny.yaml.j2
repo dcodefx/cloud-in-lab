@@ -1,0 +1,16 @@
+apiVersion: policy.networking.k8s.io/v1alpha2
+kind: ClusterNetworkPolicy
+metadata:
+  name: admin-deny-cloud-metadata
+spec:
+  tier: Admin
+  priority: 10
+  subject:
+    namespaces:
+      matchLabels: {}
+  egress:
+  - action: Deny
+    name: deny-cloud-metadata
+    to:
+    - networks:
+      - 169.254.169.254/32

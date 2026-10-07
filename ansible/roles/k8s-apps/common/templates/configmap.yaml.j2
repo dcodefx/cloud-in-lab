@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ cm.name }}
+  namespace: {{ namespace }}
+  labels:
+    app.kubernetes.io/managed-by: app-deploy
+    app.kubernetes.io/name: {{ name }}
+data:
+{% for key, val in cm.data.items() %}
+  {{ key }}: |
+{{ val | indent(4, True) }}
+{% endfor %}

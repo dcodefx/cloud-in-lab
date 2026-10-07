@@ -1,0 +1,86 @@
+---
+- name: Download Helm binary
+  ansible.builtin.get_url:
+    url: "https://get.helm.sh/helm-v{{ helm_version }}-linux-amd64.tar.gz"
+    dest: /tmp/helm.tar.gz
+    mode: "0644"
+    checksum: "{{ helm_checksum }}"
+
+- name: Install Helm binary
+  ansible.builtin.shell: |
+    tar xzf /tmp/helm.tar.gz -C /tmp/
+    mv /tmp/linux-amd64/helm /usr/local/bin/helm
+  args:
+    creates: /usr/local/bin/helm
+
+- name: Download Cilium CLI
+  ansible.builtin.get_url:
+    url: "https://github.com/cilium/cilium-cli/releases/download/v{{ cilium_cli_version }}/cilium-linux-amd64.tar.gz"
+    dest: /tmp/cilium-cli.tar.gz
+    mode: "0644"
+    checksum: "{{ cilium_cli_checksum }}"
+
+- name: Install Cilium CLI binary
+  ansible.builtin.shell: |
+    tar xzf /tmp/cilium-cli.tar.gz -C /usr/local/bin/
+  args:
+    creates: /usr/local/bin/cilium
+
+- name: Add Helm repository for Cilium
+  ansible.builtin.command:
+    cmd: helm repo add cilium https://helm.cilium.io/
+  register: _helm_repo
+  changed_when: '"already exists" not in _helm_repo.stdout'
+  failed_when: false
+
+- name: Update Helm repos
+  ansible.builtin.command:
+    cmd: helm repo update
+  when: _helm_repo.changed | default(false)
+
+- name: Render Cilium Helm values
+  ansible.builtin.template:
+    src: cilium-values.yaml.j2
+    dest: /tmp/cilium-values.yaml
+    mode: "0644"
+
+- name: Check Gateway API CRD version
+  ansible.builtin.shell: |
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf get crd gateways.gateway.networking.k8s.io -o jsonpath='{.metadata.annotations.gateway\.networking\.k8s\.io/bundle-version}' 2>/dev/null || echo "notfound"
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: _gw_crd_version
+  changed_when: false
+  failed_when: false
+
+- name: Install Gateway API CRDs (required by Cilium gatewayAPI)
+  ansible.builtin.shell: |
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf --request-timeout=30s apply --server-side --force-conflicts -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v{{ gateway_api_version }}/standard-install.yaml
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: _gw_crd
+  until: _gw_crd.rc == 0
+  retries: 6
+  delay: 10
+  changed_when: _gw_crd.rc == 0
+  when: _gw_crd_version.stdout != gateway_api_version
+
+- name: Wait for Gateway API CRDs to be established
+  ansible.builtin.shell: |
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf wait --for=condition=Established crd/gateways.gateway.networking.k8s.io --timeout=60s
+  register: _gw_est
+  until: _gw_est.rc == 0
+  retries: 6
+  delay: 10
+  changed_when: false
+
+# ListenerSet v1.5.0'dan beri Standard kanalda (GA) — standard-install.yaml
+# zaten kuruyor, ayrı experimental kuruluma gerek yok. Sadece bekle.
+- name: Wait for ListenerSet CRD to be established
+  ansible.builtin.shell: |
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf wait --for=condition=Established crd/listenersets.gateway.networking.k8s.io --timeout=60s
+  register: _listenerset_est
+  until: _listenerset_est.rc == 0
+  retries: 6
+  delay: 10
+  changed_when: false

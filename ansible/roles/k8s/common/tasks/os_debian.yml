@@ -1,0 +1,23 @@
+---
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install common packages (Debian)
+  ansible.builtin.apt:
+    name: "{{ packages_common_debian }}"
+    state: present
+
+- name: Disable swap
+  ansible.builtin.shell: |
+    swapoff -a
+    sed -i '/\sswap\s/d' /etc/fstab
+  changed_when: false
+
+- name: Disable UFW
+  ansible.builtin.service:
+    name: ufw
+    state: stopped
+    enabled: false
+  failed_when: false

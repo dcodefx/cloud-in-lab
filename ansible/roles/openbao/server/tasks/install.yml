@@ -1,0 +1,83 @@
+---
+- name: Create bao system group
+  ansible.builtin.group:
+    name: "{{ openbao_group }}"
+    system: true
+
+- name: Create bao system user
+  ansible.builtin.user:
+    name: "{{ openbao_user }}"
+    group: "{{ openbao_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+
+- name: Create bao directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ openbao_user }}"
+    group: "{{ openbao_group }}"
+    mode: "0750"
+  loop:
+    - "{{ openbao_home }}"
+    - "{{ openbao_raft_path }}"
+    - "{{ openbao_config_dir }}"
+    - "{{ openbao_cert_dir }}"
+    - /var/log/bao
+
+- name: Download checksums file
+  ansible.builtin.get_url:
+    url: "{{ openbao_checksums_url }}"
+    dest: "/tmp/checksums.txt"
+    mode: "0644"
+  register: _checksums_dl
+  until: _checksums_dl is success
+  retries: 3
+
+- name: Extract expected checksum for archive
+  ansible.builtin.shell: |
+    awk -v arch="{{ openbao_archive }}" '$2 == arch {print $1}' /tmp/checksums.txt
+  register: _expected_checksum
+  changed_when: false
+
+- name: Assert checksum found
+  ansible.builtin.assert:
+    that:
+      - _expected_checksum.stdout | length > 0
+    fail_msg: "Checksum not found in checksums.txt"
+
+- name: Download OpenBao archive
+  ansible.builtin.get_url:
+    url: "{{ openbao_binary_url }}"
+    dest: "/tmp/{{ openbao_archive }}"
+    mode: "0644"
+    checksum: "sha256:{{ _expected_checksum.stdout }}"
+  register: _binary_dl
+  until: _binary_dl is success
+  retries: 3
+
+- name: Extract OpenBao binary
+  ansible.builtin.unarchive:
+    src: "/tmp/{{ openbao_archive }}"
+    dest: /usr/local/bin
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+    creates: "{{ openbao_bin }}"
+
+- name: Verify binary signature
+  ansible.builtin.stat:
+    path: "{{ openbao_bin }}"
+    checksum_algorithm: sha256
+  register: _bin_verify
+
+- name: Cleanup downloads
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/tmp/{{ openbao_archive }}"
+    - "/tmp/checksums.txt"
+  when: not ansible_check_mode

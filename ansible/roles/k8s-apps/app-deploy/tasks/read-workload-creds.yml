@@ -1,0 +1,38 @@
+---
+# read-workload-creds.yml — K8s apps tarafı
+# ---------------------------------------------------------------------------
+# Her app deploy'da çalışır. Read credential filer + SPC fact'i oluşturur.
+# Token: gerekmez (sadece local dosya okuma)
+#
+# Girdi (çağıran taraf verir):
+#   _scope        — ör. "transit-demo"
+#
+# Çıktı (fact):
+#   spc_effective — SPC tanımı (deploy-app.yml APPLY eder)
+# ---------------------------------------------------------------------------
+
+- name: Read credential file
+  ansible.builtin.slurp:
+    src: "{{ playbook_dir }}/../outputs/openbao/{{ _scope }}-approle.json"
+  register: _creds_file
+  delegate_to: localhost
+  become: false
+
+- name: Parse credentials
+  ansible.builtin.set_fact:
+    _cred_role_id: "{{ (_creds_file.content | b64decode | from_json).role_id }}"
+    _cred_secret_id: "{{ (_creds_file.content | b64decode | from_json).secret_id }}"
+
+# SPC: provider OpenBao'dan credential'ları okur (KV path'inden), local credential kullanmaz
+- name: Set OpenBao SPC
+  ansible.builtin.set_fact:
+    spc_effective:
+      name: "{{ _scope }}-approle"
+      roleName: "{{ openbao_spc_role | default('k8s-csi-provider') }}"
+      objects:
+        - objectName: role_id
+          secretPath: "secret/data/{{ _scope }}-approle"
+          secretKey: role_id
+        - objectName: secret_id
+          secretPath: "secret/data/{{ _scope }}-approle"
+          secretKey: secret_id

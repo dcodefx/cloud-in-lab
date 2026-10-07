@@ -1,0 +1,106 @@
+---
+# ============================================
+# Global
+# ============================================
+base_domain: "{{ openbao.pki.domain }}"
+kube_conf: "/etc/kubernetes/admin.conf"
+
+# ============================================
+# Kubeconfig — tek kaynak, her yerden kullanılır
+# Non-root (ubuntu) play'ler, master rolünde kopyalanmış ~/.kube/config kullanır;
+# admin.conf master'da 0644 (homelab) olsa da erişim tek kaynaktan yönetsin diye
+# ~/.kube/config (0600, ansible_user) tercih edilir.
+# ============================================
+kubeconfig_env:
+  KUBECONFIG: "/home/{{ ansible_user }}/.kube/config"
+  K8S_AUTH_KUBECONFIG: "/home/{{ ansible_user }}/.kube/config"
+
+# ============================================
+# K8s Cluster
+# ============================================
+k8s_cluster:
+  enable: true
+  version: "1.36.2"
+  gateway_api_version: "1.6.1"
+  pod_cidr: "10.244.0.0/16"
+  service_cidr: "10.96.0.0/12"
+  cilium: "1.20.1"
+  lb_ip_pool: "164.102.98.250-164.102.98.254"
+  l2_interface: "eth0"
+  cluster_name: "homelab"
+  gateway_hostname: "homelab-gateway"
+  csi_driver: "1.6.0"
+
+  # Gateway TLS sertifikası — TEK KAYNAK (all.yml).
+  # Tüketiciler: k8s/infra (gateway-tls Certificate) + k8s/cni_crs (Shared Gateway HTTPS hostname,
+  # gateway_cert.domains[0] hostname ile sertifika SAN'ları eşleşmek zorunda).
+  # k8s/infra/defaults aynı değerin rol-ön tanımını (fallback) taşır.
+  gateway_cert:
+    duration: "2160h"
+    renew_before: "360h"
+    domains:
+      - "*.{{ base_domain }}"
+    key_algorithm: "ECDSA"
+    key_size: 384
+
+# ============================================
+# OpenBao
+# ============================================
+# Workload RBAC profilleri (plan §4) — token tipleri.
+# TTL'ler artık openbao/security/defaults → openbao_workload_profiles katalogunda (plan F);
+# app-deploy §7 include_vars ile oradan okur. Burada kopya tutulmaz.
+openbao:
+  enable: true
+  version: "2.6.2"
+  # ip  hostvars[groups.openbao[0]].ansible_host üzerinden alınır
+  port: 8200  # default roles/openbao/server/defaults/main.yml, 
+  cluster_port: 8201
+  use_default_mounts: true  # true ise mount isimleri defaults + openbao-mount.json üzerinden, false ise manuel
+  # openbao_approle_mount: approle
+  # openbao_pki_mount: pki
+  # openbao_pki_int_mount: pki-int
+
+  pki:
+    domain: "tofu.lan"
+    root_ca_ttl: "87600h"
+    int_ca_ttl: "43800h"
+    cert_ttl: "2160h"
+
+  # Ekstra platform credential'ları (opsiyonel).
+  # SABİT credential'lar openbao-ops/defaults → openbao_platform_credentials:
+  #   ops-admin, pki-manager, monitor (her zaman üretilir).
+  # Bu listedeki isimler sabit listeye birleştirilir (unique) ve
+  # rbac-platform.yml credential loop'uyla outputs/openbao/<isim>.json'a yazılır.
+  # Yalnızca openbao_platform_roles'da tanımlı roller yazılmalı (role_id GET 404 → fail).
+  credential_produce_list: []
+
+  rbac:
+    # P4 (ops-admin) ag siniri (token_bound_cidrs) — ortama gore override edilir.
+    # Bos = kisit yok. Doldurulmadan once: Ansible controller'in OpenBao'ya eristigi
+    # kaynak IP/ag bu CIDR icinde OLMALI — yanlis deger bootstrap'i kilitler.
+    # Ornek (controller 192.168.1.x homelab): ["192.168.1.0/24"]
+    ops_admin_cidrs: []
+
+  telemetry:
+    enabled: true
+    prometheus_retention_time: "30s"
+    disable_hostname: true
+
+# ============================================
+# Floci
+# ============================================
+floci:
+  enable: true
+  floci_version: "latest"
+  floci_port: 4566
+  floci_storage_mode: "hybrid"
+  floci_region: "us-east-1"
+  floci_account_id: "000000000000"
+
+# ============================================
+# Laws
+# ============================================
+laws:
+  enable: true
+  laws_version: "latest"
+  laws_port: 4566

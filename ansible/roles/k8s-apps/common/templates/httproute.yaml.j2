@@ -1,0 +1,41 @@
+{%- set _hostnames = httproute_hostnames | default(hostnames | default([name | default('')])) -%}
+{%- if _hostnames is string -%}
+  {%- set _hostnames = [_hostnames] -%}
+{%- endif -%}
+{%- set _use_bd = httproute_use_base_domain | default(use_base_domain | default(true)) -%}
+{%- set _fqdn_list = [] -%}
+{%- for h in _hostnames -%}
+  {%- if _use_bd | bool -%}
+    {%- set _ = _fqdn_list.append(h ~ '.' ~ base_domain) -%}
+  {%- else -%}
+    {%- set _ = _fqdn_list.append(h) -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- set _gateway_name = httproute_gateway | default(gateway_hostname | default(k8s_cluster.cluster_name ~ '-gateway')) -%}
+{%- set _gateway_ns = httproute_gateway_namespace | default(gateway_namespace | default('kube-system')) -%}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ httproute_name | default((name | default('')) ~ '-route') }}
+  namespace: {{ httproute_namespace | default(namespace | default('default')) }}
+  labels:
+    app.kubernetes.io/managed-by: app-deploy
+    app.kubernetes.io/name: {{ name | default('') }}
+spec:
+  parentRefs:
+{% if tls_mode | default('shared') == 'dedicated' %}
+    - name: {{ name }}-listeners
+      kind: ListenerSet
+      group: gateway.networking.k8s.io
+{% else %}
+    - name: {{ _gateway_name }}
+      namespace: {{ _gateway_ns }}
+{% endif %}
+  hostnames:
+{% for fqdn in _fqdn_list %}
+    - {{ fqdn }}
+{% endfor %}
+  rules:
+    - backendRefs:
+        - name: {{ httproute_service | default(name | default('')) }}
+          port: {{ httproute_port | default(port | default(80)) }}

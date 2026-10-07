@@ -1,0 +1,12 @@
+---
+tls_mode: "allow-http"  # allow-http | redirect
+
+openbao_pki_role: "tofu-lan"
+
+gateway_cert:
+  duration: "2160h"
+  renew_before: "360h"
+  domains:
+    - "*.{{ base_domain }}"
+  key_algorithm: "ECDSA"
+  key_size: 384

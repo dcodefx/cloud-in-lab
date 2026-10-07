@@ -1,0 +1,11 @@
+---
+- name: Install dependencies (Debian)
+  ansible.builtin.apt:
+    name:
+      - curl
+      - unzip
+      - gnupg
+      - openssl
+      - jq
+    state: present
+    update_cache: true

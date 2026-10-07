@@ -1,0 +1,29 @@
+# Prod - EFK Stack
+efk_pools = {
+  elasticsearch-master = {
+    role              = "elasticsearch-master"
+    vm_name           = "es-master"
+    vm_count          = 3
+    cpu_cores         = 2
+    vm_memory         = 4096
+    disk_size         = 20
+    disk_storage      = "local-lvm"
+    data_disk_enabled = false
+    data_disk_size    = 0
+    data_disk_storage = "local-lvm"
+    ip_start_index    = 210
+  }
+  elasticsearch-data = {
+    role              = "elasticsearch-data"
+    vm_name           = "es-data"
+    vm_count          = 2
+    cpu_cores         = 4
+    vm_memory         = 16384
+    disk_size         = 20
+    disk_storage      = "local-lvm"
+    data_disk_enabled = true
+    data_disk_size    = 200
+    data_disk_storage = "local-lvm"
+    ip_start_index    = 220
+  }
+}

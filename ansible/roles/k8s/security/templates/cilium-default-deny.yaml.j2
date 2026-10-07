@@ -1,0 +1,18 @@
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: global-default-deny-all
+spec:
+  description: "Cluster genelinde tum Ingress ve Egress trafigini varsayilan olarak kilitler"
+  endpointSelector: {}
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:non-existent: "true"
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:non-existent: "true"

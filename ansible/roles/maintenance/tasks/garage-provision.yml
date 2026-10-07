@@ -1,0 +1,271 @@
+---
+# ── 5) Garage2: bucket/key ENSURE — single source maintenance_jobs (idempotent) ──
+# Runs on the garage-backup host (garage2): the garage CLI answers json-api
+# calls over ssh — NO pct exec / CT id anywhere in ansible (openbao host model;
+# the CT id lives only in scripts/garage-setup/.garage-setup.env for chef.sh).
+# Garage shows the secret only at CreateKey time (GetKeyInfo never returns it —
+# subdir when run against maintenance-<ctid>.ini.generated).
+- name: "Garage2: bucket inventory (ListBuckets)"
+  when: m_buckets | length > 0 and inventory_hostname in m_garage_hosts
+  ansible.builtin.command:
+    argv:
+      - garage
+      - json-api
+      - ListBuckets
+  register: m_g2_buckets
+  changed_when: false
+
+- name: "Garage2: key inventory (ListKeys)"
+  when: m_buckets | length > 0 and inventory_hostname in m_garage_hosts
+  ansible.builtin.command:
+    argv:
+      - garage
+      - json-api
+      - ListKeys
+  register: m_g2_keys
+  changed_when: false
+
+- name: "Garage2: create missing buckets (bucket=repo)"
+  ansible.builtin.command:
+    argv:
+      - garage
+      - json-api
+      - CreateBucket
+      - '{"globalAlias":"{{ item }}"}'
+  loop: "{{ m_buckets }}"
+  loop_control:
+    index_var: m_idx
+  when: >-
+    m_buckets | length > 0 and inventory_hostname in m_garage_hosts
+    and item not in (m_g2_buckets.stdout | default('[]', true) | from_json | map(attribute='globalAliases') | flatten | list)
+  register: m_g2_created
+
+- name: "Garage2: refresh bucket inventory (re-fetch after creation)"
+  when: m_buckets | length > 0 and inventory_hostname in m_garage_hosts
+  ansible.builtin.command:
+    argv:
+      - garage
+      - json-api
+      - ListBuckets
+  register: m_g2_buckets2
+  changed_when: false
+
+# Note: do NOT send globalAliases (plural array) to CreateBucket — the v2 API
+# expects a single "globalAlias" and silently swallows the wrong field, leaving
+# the bucket without an alias. The alias is verified separately via the CLI
+# (task below) — for the buckets created in this run, matched by the same index
+# (no guessing).
+- name: "Garage2: ensure bucket aliases (alias own-run buckets only)"
+  ansible.builtin.command:
+    argv:
+      - garage
+      - bucket
+      - alias
+      - "{{ (m_g2_created.results[m_idx].stdout | from_json).id }}"
+      - "{{ item }}"
+  loop: "{{ m_buckets }}"
+  loop_control:
+    index_var: m_idx
+  when: >-
+    m_buckets | length > 0 and inventory_hostname in m_garage_hosts
+    and item not in (m_g2_buckets2.stdout | default('[]', true) | from_json | map(attribute='globalAliases') | flatten | list)
+    and (m_g2_created.results[m_idx].changed | default(false))
+
+- name: "Garage2: refresh bucket inventory (re-fetch after aliasing)"
+  when: m_buckets | length > 0 and inventory_hostname in m_garage_hosts
+  ansible.builtin.command:
+    argv:
+      - garage
+      - json-api
+      - ListBuckets
+  register: m_g2_buckets3
+  changed_when: false
+
+# Alias still missing and this run created nothing for it → orphan alias-less
+# bucket from a previous broken run. Stop LOUDLY: mapping would be a guess,
+# auto-delete is destructive. Operator deletes the EMPTY orphans once.
+- name: "Garage2: orphan alias-less buckets — stop (manual cleanup, no guessing)"
+  ansible.builtin.fail:
+    msg: >-
+      Bucket alias '{{ item }}' is missing and this run created no bucket for it.
+      An alias-less bucket from a previous broken run exists — ansible will not
+      guess the mapping and will not auto-delete.
+      On garage2, list and delete the EMPTY orphans, then rerun:
+        garage json-api ListBuckets
+        garage bucket delete --yes <uuid>
+      (backups unaffected — orphans hold no restic repos; keys/key files stay valid)
+  loop: "{{ m_buckets }}"
+  loop_control:
+    index_var: m_idx
+  when: >-
+    m_buckets | length > 0 and inventory_hostname in m_garage_hosts
+    and item not in (m_g2_buckets3.stdout | default('[]', true) | from_json | map(attribute='globalAliases') | flatten | list)
+    and not (m_g2_created.results[m_idx].changed | default(false))
+
+# Informational: alias-less buckets (empty, inert) left by previous broken runs.
+# Never auto-deleted, never adopted — operator deletes them once, then quiet.
+- name: "Garage2: report orphan alias-less buckets (manual cleanup, optional)"
+  ansible.builtin.debug:
+    msg: >-
+      Orphan alias-less buckets (empty, inert):
+      {{ (m_g2_buckets3.stdout | default('[]', true) | from_json | selectattr('globalAliases', 'equalto', []) | selectattr('localAliases', 'equalto', []) | map(attribute='id') | list) | join(', ') }}
+      Delete on garage2 when convenient: garage bucket delete --yes <uuid>
+  when: >-
+    m_buckets | length > 0 and inventory_hostname in m_garage_hosts
+    and ((m_g2_buckets3.stdout | default('[]', true) | from_json | selectattr('globalAliases', 'equalto', []) | selectattr('localAliases', 'equalto', []) | list) | length > 0)
+  changed_when: false
+
+- name: "Garage2: check key files (on controller)"
+  when: m_buckets | length > 0 and inventory_hostname in m_garage_hosts
+  ansible.builtin.stat:
+    path: "{{ m_garage_out_dir }}/{{ item }}.key"
+  delegate_to: localhost
+  become: false
+  loop: "{{ m_buckets }}"
+  loop_control:
+    index_var: m_idx
+  register: m_keyfile_stat
+
+- name: "Garage2: key file MISSING + access key EXISTS — secret unrecoverable, fail loudly"
+  ansible.builtin.fail:
+    msg: >-
+      Bucket {{ item }} has no key file but '{{ item }}-key' exists in Garage.
+      Garage shows the secret only at CreateKey time (GetKeyInfo never returns it).
+      Manual recovery (on garage2): garage key info '{{ item }}-key'
+      or delete and recreate the key (backups unaffected — restic repo stays encrypted):
+      garage key delete --yes '{{ item }}-key'
+  loop: "{{ m_buckets }}"
+  loop_control:
+    index_var: m_idx
+  when: >-
+    m_buckets | length > 0 and inventory_hostname in m_garage_hosts
+    and not m_keyfile_stat.results[m_idx].stat.exists
+    and (item ~ '-key') in (m_g2_keys.stdout | default('[]', true) | from_json | map(attribute='name') | list)
+
+- name: "Garage2: key file MISSING + access key MISSING — CreateKey"
+  ansible.builtin.command:
+    argv:
+      - garage
+      - json-api
+      - CreateKey
+      - '{"name":"{{ item }}-key"}'
+  loop: "{{ m_buckets }}"
+  loop_control:
+    index_var: m_idx
+  when: >-
+    m_buckets | length > 0 and inventory_hostname in m_garage_hosts
+    and not m_keyfile_stat.results[m_idx].stat.exists
+    and (item ~ '-key') not in (m_g2_keys.stdout | default('[]', true) | from_json | map(attribute='name') | list)
+  register: m_g2_newkeys
+  no_log: true
+
+- name: "Garage2: write key file (controller, 0600)"
+  ansible.builtin.copy:
+    content: |-
+      KEY_ID={{ ((m_g2_newkeys.results[m_idx].stdout | from_json).accessKeyId | default((m_g2_newkeys.results[m_idx].stdout | from_json).id)) }}
+      SECRET={{ (m_g2_newkeys.results[m_idx].stdout | from_json).secretAccessKey }}
+    dest: "{{ m_garage_out_dir }}/{{ item }}.key"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  loop: "{{ m_buckets }}"
+  loop_control:
+    index_var: m_idx
+  when: >-
+    m_buckets | length > 0 and inventory_hostname in m_garage_hosts
+    and not m_keyfile_stat.results[m_idx].stat.exists
+  no_log: true
+
+- name: "Garage2: key file format check (controller — KEY_ID + SECRET present)"
+  when: >-
+    m_buckets | length > 0 and inventory_hostname in m_garage_hosts
+    and m_keyfile_stat.results[m_idx].stat.exists
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.file', m_garage_out_dir ~ '/' ~ item ~ '.key') | regex_findall('(?m)^KEY_ID=(.+)$') | length == 1
+      - lookup('ansible.builtin.file', m_garage_out_dir ~ '/' ~ item ~ '.key') | regex_findall('(?m)^SECRET=(.+)$') | length == 1
+    fail_msg: >-
+      {{ m_garage_out_dir }}/{{ item }}.key is malformed: expected exactly one
+      non-empty `KEY_ID=` line and one non-empty `SECRET=` line. The file exists
+      but is empty, truncated or a partial write. Do NOT let the role regenerate
+      it — Garage shows the secret only at CreateKey time, so this file is the
+      only copy. Restore it from your own backup first.
+    success_msg: "key file format ok: {{ item }}"
+  loop: "{{ m_buckets }}"
+  loop_control:
+    index_var: m_idx
+
+- name: "Garage2: parse key files once (controller — m_g2_keyfiles)"
+  when: m_buckets | length > 0 and inventory_hostname in m_garage_hosts
+  ansible.builtin.set_fact:
+    m_g2_keyfiles: >-
+      {{ m_g2_keyfiles | default({}) | combine({
+           item: {
+             'id': lookup('ansible.builtin.file', m_garage_out_dir ~ '/' ~ item ~ '.key')
+                   | regex_findall('(?m)^KEY_ID=(.+)$') | first | trim,
+             'secret': lookup('ansible.builtin.file', m_garage_out_dir ~ '/' ~ item ~ '.key')
+                   | regex_findall('(?m)^SECRET=(.+)$') | first | trim
+           }
+         }) }}
+  loop: "{{ m_buckets }}"
+  loop_control:
+    index_var: m_idx
+  no_log: true
+
+- name: "Garage2: key file EXISTS + access key MISSING — ImportKey from key file"
+  ansible.builtin.command:
+    argv:
+      - garage
+      - json-api
+      - ImportKey
+      - >-
+        {"accessKeyId":"{{ m_g2_keyfiles[item].id }}",
+         "secretAccessKey":"{{ m_g2_keyfiles[item].secret }}",
+         "name":"{{ item }}-key"}
+  loop: "{{ m_buckets }}"
+  loop_control:
+    index_var: m_idx
+  when: >-
+    m_buckets | length > 0 and inventory_hostname in m_garage_hosts
+    and m_keyfile_stat.results[m_idx].stat.exists
+    and m_g2_keyfiles[item].id not in (m_g2_keys.stdout | default('[]', true) | from_json | map(attribute='id') | list)
+  no_log: true
+
+- name: "Garage2: refresh key inventory (re-fetch after possible ImportKey)"
+  when: m_buckets | length > 0 and inventory_hostname in m_garage_hosts
+  ansible.builtin.command:
+    argv:
+      - garage
+      - json-api
+      - ListKeys
+  register: m_g2_keys2
+  changed_when: false
+
+- name: "Garage2: key file EXISTS — is access key still alive? (id verification)"
+  ansible.builtin.assert:
+    that:
+      - m_g2_keyfiles[item].id in (m_g2_keys2.stdout | default('[]', true) | from_json | map(attribute='id') | list)
+    fail_msg: >-
+      KEY_ID in bucket {{ item }} key file not found in Garage — the access key may have been deleted.
+      Fix manually: correct the key file or delete '{{ item }}-key' and regenerate it.
+    success_msg: "key file valid: {{ item }}-key"
+  loop: "{{ m_buckets }}"
+  loop_control:
+    index_var: m_idx
+  when: >-
+    m_buckets | length > 0 and inventory_hostname in m_garage_hosts
+    and m_keyfile_stat.results[m_idx].stat.exists
+
+- name: "Garage2: bucket access R/W (no owner — blast radius; idempotent)"
+  when: m_buckets | length > 0 and inventory_hostname in m_garage_hosts
+  ansible.builtin.command:
+    argv:
+      - garage
+      - json-api
+      - AllowBucketKey
+      - >-
+        {"bucketId":"{{ (m_g2_buckets3.stdout | default('[]', true) | from_json | selectattr('globalAliases', 'contains', item) | map(attribute='id') | first) }}",
+          "accessKeyId":"{{ m_g2_keyfiles[item].id }}",
+         "permissions":{"owner":false,"read":true,"write":true}}
+  loop: "{{ m_buckets }}"
+  changed_when: false

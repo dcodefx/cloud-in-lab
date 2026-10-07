@@ -1,0 +1,76 @@
+---
+# Özel ClusterRole'ler (custom)
+# Kullanim: inventory/group_vars/all/all.yml'ye ekleyin.
+# Ornek:
+#   custom_cluster_roles:
+#     - name: redis-operator
+#       aggregates: [developer]
+#       apiGroups: [""]
+#       resources: [pods]
+#       verbs: [get, list, watch]
+custom_cluster_roles: []
+
+# CiliumClusterwideNetworkPolicy enable flag'lari
+# Core policy'ler (default-deny, dns, gateway-ingress) her zaman aktif.
+# Opsiyonel policy'ler asagidaki flag'lerle kontrol edilir.
+enable_policy_cidr_egress: true
+enable_policy_ns_isolation: false
+enable_policy_fqdn_egress: false
+# Self-service OpenBao egress (OI-006 D): homelab.io/allow-openbao-egress etiketli pod'lar.
+# Etiketsizken no-op'tur; demo Job'u bu etiketi tasir.
+enable_openbao_egress_by_label: true
+
+# CIDR egress parametreleri (cert-manager + CSI driver -> OpenBao)
+policy_cidr_name: "openbao-egress"
+policy_cidr_description: "cert-manager ve CSI driver pod'larinin OpenBao LXC'ye erismesine izin verir"
+policy_cidr_selector:
+  matchExpressions:
+  - key: k8s:app.kubernetes.io/name
+    operator: In
+    values: ["cert-manager", "openbao-csi-provider"]
+policy_cidr_cidrs:
+  - "{{ openbao_host }}/32"
+policy_cidr_ports:
+  - 8200
+
+# Namespace isolation parametreleri
+policy_ns_target: "payment-team"
+policy_ns_source: "frontend-team"
+
+# FQDN egress parametreleri — KULLANIM DISI ORNEK (nötr).
+# App'e ozel FQDN ihtiyaci artik app girdisindeki 'egress_fqdn' ile
+# app-deploy tarafinda uretiliyor (per-app CNP). Bu blok yalniz altyapi
+# kacis kapisi olarak durur; flag kapaliyken hicbir sey basilmaz.
+policy_fqdn_name: "kullanim-disi-ornek"
+policy_fqdn_namespace: "ornek"
+policy_fqdn_description: "Ornek — app ihtiyaci icin egress_fqdn kullanin"
+policy_fqdn_selector:
+  app: ornek-app
+policy_fqdn_match_names: []
+policy_fqdn_match_patterns: []
+
+# Varsayilan olarak uretilecek kubeconfig'ler.
+# Buradaki roller agregated ClusterRole'lari kullanir.
+# Tekil bir ClusterRole icin playbooks/gen-kubeconfig.yml kullanin.
+kubeconfig_roles:
+  - name: viewer
+    display: Viewer
+    cluster_role: aggregated-viewer
+    filename: viewer
+    namespace: kubeconfig-sa
+  - name: developer
+    display: Developer
+    cluster_role: aggregated-developer
+    filename: developer
+    namespace: kubeconfig-sa
+  - name: deployer
+    display: Deployer
+    cluster_role: aggregated-deployer
+    filename: deployer
+    namespace: kubeconfig-sa
+  - name: monitoring
+    display: Monitoring
+    cluster_role: aggregated-monitoring
+    filename: monitoring
+    namespace: kubeconfig-sa
+    cluster_wide: true

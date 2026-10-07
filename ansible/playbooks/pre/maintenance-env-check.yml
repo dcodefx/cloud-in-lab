@@ -1,0 +1,78 @@
+---
+# pre/maintenance-env-check.yml — maintenance on kosullari (openbao-env-check kalibi):
+#   1) controller artifacts: garage-backup envanterde mi, restic pw dosyalari var mi
+#   2) garage-backup: ssh + garage CLI calisiyor mu (ListBuckets)
+# Hepsini "once su adimi calistir" mesajiyla durdurur; maintenance.yml bunu import eder.
+- name: Maintenance env pre-check (controller artifacts)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Check garage-backup host exists in inventory
+      ansible.builtin.assert:
+        that:
+          - groups.get('garage-backup', []) | length > 0
+        fail_msg: >-
+          maintenance.ini'de [garage-backup] yok — önce
+          ./scripts/garage-setup/chef.sh çalıştır (envanter üretir;
+          README §Kurulum).
+
+    - name: Resolve garage outputs dir (entry-playbook independent)
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ playbook_dir }}/../outputs/garage-backups"
+        - "{{ playbook_dir }}/../../outputs/garage-backups"
+      register: _m_out_candidates
+      failed_when: false
+
+    - name: Select existing outputs dir
+      ansible.builtin.set_fact:
+        _m_garage_out_dir: "{{ (_m_out_candidates.results | selectattr('stat.exists', 'equalto', true) | map(attribute='item') | list | first) | default(playbook_dir + '/../outputs/garage-backups') }}"
+      changed_when: false
+
+    - name: Append per-CT subdir (maintenance-<ctid>.ini.generated → ct-<ctid>; legacy flat falls back)
+      ansible.builtin.set_fact:
+        _m_garage_out_dir: "{{ _m_garage_out_dir }}{{ '/' + _m_ct_subdir if _m_ct_subdir is match('^ct-[0-9]+$') else '' }}"
+      vars:
+        # Kaynak: ansible_inventory_sources (inventory_file magic var'i core 2.21'de tanimsiz).
+        _m_ct_subdir: "{{ (((ansible_inventory_sources | default([])) | map('basename') | select('search', '^maintenance-[0-9]+\\.ini\\.generated$') | list) + [''])[0] | regex_replace('^maintenance-([0-9]+)\\.ini\\.generated$', 'ct-\\1') }}"
+      changed_when: false
+
+    - name: Check restic password files (outputs/garage-backups)
+      ansible.builtin.find:
+        paths: "{{ _m_garage_out_dir }}"
+        patterns: "restic-*.pw"
+      register: _m_pw_files
+      failed_when: false
+
+    - name: Fail if restic password files not found
+      ansible.builtin.fail:
+        msg: >-
+          {{ _m_garage_out_dir }}/restic-*.pw yok — önce
+          ./scripts/garage-setup/chef.sh (sifre+envanter üretir; README §Kurulum).
+      when: _m_pw_files.files | default([]) | length == 0
+
+- name: Maintenance env pre-check (garage2 connectivity)
+  hosts: garage-backup
+  become: false
+  gather_facts: false
+  tasks:
+    - name: Wait for SSH connection
+      ansible.builtin.wait_for_connection:
+        delay: 5
+        timeout: 30
+
+    - name: Verify garage CLI answers (ListBuckets)
+      ansible.builtin.command: garage json-api ListBuckets
+      register: _m_g2_list
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if garage CLI not reachable
+      ansible.builtin.fail:
+        msg: >-
+          garage2'ye ssh var ama 'garage json-api' çalışmıyor (rc={{ _m_g2_list.rc }}) —
+          chef.sh ile ssh+garage kurulumunu kontrol et (GARAGE_ENABLE_SSH=true;
+          pct exec $CT_ID -- garage status).
+      when: _m_g2_list.rc != 0

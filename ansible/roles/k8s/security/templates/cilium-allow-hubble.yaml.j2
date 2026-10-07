@@ -1,0 +1,49 @@
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: allow-hubble-relay
+spec:
+  description: "Hubble relay -> Cilium agent peer (4244) egress; relay ingress"
+  endpointSelector:
+    matchLabels:
+      k8s:k8s-app: hubble-relay
+  egress:
+  - toEntities:
+    - remote-node
+    - host
+    toPorts:
+    - ports:
+      - port: "4244"
+        protocol: TCP
+  ingress:
+  - fromEntities:
+    - cluster
+    - host
+    toPorts:
+    - ports:
+      - port: "4245"
+        protocol: TCP
+      - port: "80"
+        protocol: TCP
+      - port: "443"
+        protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: allow-hubble-ui
+spec:
+  description: "Hubble UI ingress"
+  endpointSelector:
+    matchLabels:
+      k8s:k8s-app: hubble-ui
+  ingress:
+  - fromEntities:
+    - cluster
+    - host
+    toPorts:
+    - ports:
+      - port: "8081"
+        protocol: TCP
+      - port: "80"
+        protocol: TCP

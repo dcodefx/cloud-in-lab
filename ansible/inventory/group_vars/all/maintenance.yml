@@ -1,0 +1,51 @@
+# ============================================
+# Maintenance (backup orchestration — restic + systemd timers + Prometheus)
+# ============================================
+# Role: roles/maintenance
+# Inventory: inventory/maintenance-<ctid>.ini.generated
+#   (generator: chef.sh via scripts/garage-setup/gen-maintenance-inventory.sh — never write it by hand)
+#
+# Structural defaults (version pins, directories, JOB MAP, schedules):
+#   roles/maintenance/defaults/main.yml
+# Only ENVIRONMENT values are overridden here (AGENTS §5: existing style).
+#
+# Hiyerarsi: maintenance: → {enable, project_name, homelab_cidr} ortak;
+#   backup: (yedekleme) ve restore: (kurtarma, su an dummy) alt anahtarlar.
+maintenance:
+  enable: true
+  # Project name — unit names (/etc/tofu-lar, tofu-lar-backup-*) and metric
+  # directories (/var/lib/tofu-lar/backup-metrics) are derived from it.
+  project_name: "tofu-lar"
+  # Homelab subnet — same value as base_ip/ip_mask in tofu/environments/*/common.tfvars.
+  # (Dis scrape egress'i artik envanterden /32 listesiyle sinirli — monitoring.yml.)
+  homelab_cidr: "164.102.98.0/24"
+  backup:
+    # Ana backup akış şalteri (restore-only koşuda kapatılır; include'lar
+    # main.yml dispatcher'da bu flag'e bağlıdır).
+    enabled: true
+    # Storage modes (MAINT_STORAGE):
+    #   restic  → aktif mimari (Garage2 kovaları, bucket=repo, keep-last N)
+    #   s3tier  → LEGACY (üretime kapalı; kod örnek/geri dönüş için duruyor)
+    #   both    → LEGACY gölge dönemi (üretime kapalı)
+    storage: "restic"
+    # node_exporter listen address — tek kaynak: drop-in (defaults/main.yml)
+    # ve maintenance dis scrape sablonlari (Service/Endpoints/CNP) bunu okur.
+    node_exporter_listen: ":9100"
+    # Backup PrometheusRule lifecycle (roles/maintenance → monitoring.yml):
+    # true → `maintenance` PrometheusRule uygulanir (k8s-master-1 uzerinden,
+    # run_once, kubectl apply; grup: maintenance.backup). Kurallar:
+    # roles/maintenance/templates/alerts/backup.yaml.j2.
+    alerts_enabled: true
+  restore:
+    # DUMMY — henuz kullanilmiyor (restore/ scriptleri manuel calisir).
+    # Restore otomasyonu (hedef secimi, dogrulama, rapor) buradan yonetilecek.
+    enabled: false
+  # Repo root'lar ve exporter host listesi HARDCODE DEGILDIR — rol bunlari
+  # otomatik tureltir (defaults/main.yml: m_root konvansiyonu, m_exporter_hosts
+  # job+grup hesabi). Yeni host icin buraya satir eklenmez; maintenance_jobs'a
+  # job girilmesi yeterlidir.
+  # Restic repo passwords — vault DOES NOT exist at this stage; project convention:
+  #   chef.sh uretir (gen-restic-passwords.sh --ct-id → 0600 file)
+  #   ansible/outputs/garage-backups/ct-<ctid>/restic-<job>.pw  (read by roles/maintenance)
+  #   A COPY must go into the password manager — lost passwords = lost backups.
+  # (Future vault migration: the role only changes this lookup.)

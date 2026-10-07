@@ -1,0 +1,261 @@
+---
+
+- name: Validate required fields
+  ansible.builtin.assert:
+    that:
+      - name | length > 0
+      - image | length > 0
+    fail_msg: "Each app requires 'name' and 'image'. App: {{ name }}"
+
+- name: Validate kind value
+  ansible.builtin.assert:
+    that:
+      - kind in ['deployment', 'statefulset', 'job', 'cronjob']
+    fail_msg: "{{ name }}: 'kind' must be 'deployment', 'statefulset', 'job', or 'cronjob'. Given: {{ kind }}"
+  when: kind is defined
+
+- name: Validate cronjob schedule
+  ansible.builtin.assert:
+    that:
+      - schedule | length > 0
+    fail_msg: "{{ name }}: 'schedule' is required for 'kind: cronjob'."
+  when: kind == 'cronjob'
+
+- name: Validate hostname format
+  ansible.builtin.assert:
+    that:
+      - item | length > 0
+    fail_msg: "{{ name }}: validate hostname format: {{ item }}"
+  loop: "{{ hostnames.split(',') if hostnames is string else hostnames }}"
+  when: hostnames is defined and hostnames | length > 0
+
+- name: Validate egress_fqdn entries
+  ansible.builtin.assert:
+    that:
+      - item.match is defined or item.pattern is defined
+    fail_msg: "{{ name }}: egress_fqdn entry requires 'match' or 'pattern'. Given: {{ item }}"
+  loop: "{{ egress_fqdn | default([]) }}"
+  when: egress_fqdn | default([]) | length > 0
+
+- name: Set templated scripts ConfigMap default
+  ansible.builtin.set_fact:
+    openbao_scripts_cm: "{{ name }}-scripts"
+
+- name: Load per-app vars (templated/<name>/vars/main.yml)
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../roles/k8s-apps/templated/{{ name }}/vars/main.yml"
+  failed_when: false
+
+- name: Validate explicit command references scripts file
+  ansible.builtin.assert:
+    that:
+      - openbao_script_file in ((app.command | default([]) | to_json) + (app.args | default([]) | to_json))
+    fail_msg: "{{ name }}: custom command/args is set but '{{ openbao_script_file }}' is not in args. Add the filename to args or set 'allow_script_mismatch: true' on the app."
+  when:
+    - (app.command | default([]) | length > 0)
+    - openbao_scripts_cm is defined
+    - openbao_script_file is defined
+    - not (app.allow_script_mismatch | default(false) | bool)
+
+- name: OpenBao workflow
+  ansible.builtin.include_tasks: openbao-workflow.yml
+  when: >
+    (openbao_enabled | default(false) | bool) and
+    (app.openbao is defined and app.openbao.profile | default('none') != 'none')
+
+- name: Create Namespace
+  ansible.builtin.template:
+    src: ../../common/templates/namespace.yaml.j2
+    dest: "/tmp/app-{{ name }}-namespace.yaml"
+    mode: "0644"
+
+- name: Apply Namespace
+  ansible.builtin.shell:
+    cmd: "kubectl apply -f /tmp/app-{{ name }}-namespace.yaml"
+
+  changed_when: false
+
+- name: Create ServiceAccount (openbao)
+  ansible.builtin.template:
+    src: ../../common/templates/serviceaccount.yaml.j2
+    dest: "/tmp/app-{{ name }}-sa.yaml"
+    mode: "0644"
+  vars:
+    sa_name: "{{ ob_scope | default(name) }}"
+  when: openbao_enabled | default(false) | bool
+
+- name: Apply ServiceAccount (openbao)
+  ansible.builtin.shell:
+    cmd: "kubectl apply -f /tmp/app-{{ name }}-sa.yaml"
+  changed_when: false
+  when: openbao_enabled | default(false) | bool
+
+- name: Create SecretProviderClass (CSI)
+  ansible.builtin.template:
+    src: ../../common/templates/secretproviderclass.yaml.j2
+    dest: "/tmp/app-{{ name }}-spc.yaml"
+    mode: "0644"
+  when: (spc | default({}) | length > 0) or (spc_effective | default({}) | length > 0)
+
+- name: Apply SecretProviderClass (CSI)
+  ansible.builtin.shell:
+    cmd: "kubectl apply -f /tmp/app-{{ name }}-spc.yaml"
+
+  changed_when: false
+  when: (spc | default({}) | length > 0) or (spc_effective | default({}) | length > 0)
+
+- name: Create ConfigMap
+  ansible.builtin.template:
+    src: ../../common/templates/configmap.yaml.j2
+    dest: "/tmp/app-{{ name }}-configmap-{{ cm.name }}.yaml"
+    mode: "0644"
+  loop: "{{ configmaps | default([]) }}"
+  loop_control:
+    loop_var: cm
+    label: "{{ cm.name }}"
+
+- name: Apply ConfigMap
+  ansible.builtin.shell:
+    cmd: "kubectl apply -f /tmp/app-{{ name }}-configmap-{{ cm.name }}.yaml"
+
+  changed_when: false
+  loop: "{{ configmaps | default([]) }}"
+  loop_control:
+    loop_var: cm
+    label: "{{ cm.name }}"
+
+- name: Create OpenBao scripts ConfigMap (content from templated/<name>/files)
+  ansible.builtin.template:
+    src: ../../common/templates/configmap.yaml.j2
+    dest: "/tmp/app-{{ name }}-configmap-{{ openbao_scripts_cm }}.yaml"
+    mode: "0644"
+  vars:
+    cm:
+      name: "{{ openbao_scripts_cm }}"
+      # Anahtar Jinja ifadesinin ICINDE degisken olarak verilir (task vars'ta dict anahtari render edilmez).
+      data: "{{ {openbao_script_file: lookup('ansible.builtin.file', playbook_dir + '/../roles/k8s-apps/templated/' + name + '/files/' + openbao_script_file)} }}"
+  when: openbao_scripts_cm is defined and openbao_script_file is defined
+
+- name: Apply OpenBao scripts ConfigMap
+  ansible.builtin.shell:
+    cmd: "kubectl apply -f /tmp/app-{{ name }}-configmap-{{ openbao_scripts_cm }}.yaml"
+
+  changed_when: false
+  when: openbao_scripts_cm is defined and openbao_script_file is defined
+
+- name: Create Workload ({{ kind }})
+  ansible.builtin.template:
+    src: "../../common/templates/{{ kind }}.yaml.j2"
+    dest: "/tmp/app-{{ name }}-{{ kind }}.yaml"
+    mode: "0644"
+
+- name: Apply Workload ({{ kind }})
+  ansible.builtin.shell:
+    cmd: "kubectl apply -f /tmp/app-{{ name }}-{{ kind }}.yaml"
+
+  changed_when: false
+
+- name: Create Service
+  ansible.builtin.template:
+    src: ../../common/templates/service.yaml.j2
+    dest: "/tmp/app-{{ name }}-service.yaml"
+    mode: "0644"
+  when: kind in ['deployment', 'statefulset']
+
+- name: Apply Service
+  ansible.builtin.shell:
+    cmd: "kubectl apply -f /tmp/app-{{ name }}-service.yaml"
+
+  changed_when: false
+  when: kind in ['deployment', 'statefulset']
+
+- name: Create ServiceMonitor
+  ansible.builtin.template:
+    src: ../../common/templates/servicemonitor.yaml.j2
+    dest: "/tmp/app-{{ name }}-servicemonitor.yaml"
+    mode: "0644"
+  when: >
+    kind in ['deployment', 'statefulset'] and
+    monitoring.serviceMonitor.enabled | default(false) | bool
+
+- name: Apply ServiceMonitor
+  ansible.builtin.shell:
+    cmd: "kubectl apply -f /tmp/app-{{ name }}-servicemonitor.yaml"
+  changed_when: false
+  when: >
+    kind in ['deployment', 'statefulset'] and
+    monitoring.serviceMonitor.enabled | default(false) | bool
+
+- name: Create HTTPRoute
+  ansible.builtin.template:
+    src: ../../common/templates/httproute.yaml.j2
+    dest: "/tmp/app-{{ name }}-httproute.yaml"
+    mode: "0644"
+  when: kind in ['deployment', 'statefulset'] and expose | bool
+
+- name: Apply HTTPRoute
+  ansible.builtin.shell:
+    cmd: "kubectl apply -f /tmp/app-{{ name }}-httproute.yaml"
+
+  changed_when: false
+  when: kind in ['deployment', 'statefulset'] and expose | bool
+
+- name: Create CiliumNetworkPolicy (Gateway egress)
+  ansible.builtin.template:
+    src: ../../common/templates/cilium-allow-gateway-egress.yaml.j2
+    dest: "/tmp/app-{{ name }}-netpol.yaml"
+    mode: "0644"
+  when: kind in ['deployment', 'statefulset'] and expose | bool
+
+- name: Apply CiliumNetworkPolicy
+  ansible.builtin.shell:
+    cmd: "kubectl apply -f /tmp/app-{{ name }}-netpol.yaml"
+
+  changed_when: false
+  when: kind in ['deployment', 'statefulset'] and expose | bool
+
+- name: Create CiliumNetworkPolicy (app FQDN egress, self-service)
+  ansible.builtin.template:
+    src: ../../common/templates/cilium-allow-egress-fqdn.yaml.j2
+    dest: "/tmp/app-{{ name }}-fqdn-egress.yaml"
+    mode: "0644"
+  when: egress_fqdn | default([]) | length > 0
+
+- name: Apply CiliumNetworkPolicy (app FQDN egress)
+  ansible.builtin.shell:
+    cmd: "kubectl apply -f /tmp/app-{{ name }}-fqdn-egress.yaml"
+
+  changed_when: false
+  when: egress_fqdn | default([]) | length > 0
+
+- name: Create Certificate (dedicated TLS)
+  ansible.builtin.template:
+    src: ../../common/templates/certificate.yaml.j2
+    dest: "/tmp/app-{{ name }}-cert.yaml"
+    mode: "0644"
+  when: kind in ['deployment', 'statefulset'] and tls_mode == 'dedicated' and expose | bool
+
+- name: Apply Certificate
+  ansible.builtin.shell:
+    cmd: "kubectl apply -f /tmp/app-{{ name }}-cert.yaml"
+
+  changed_when: false
+  when: kind in ['deployment', 'statefulset'] and tls_mode == 'dedicated' and expose | bool
+
+- name: Set dedicated hostname for ListenerSet
+  ansible.builtin.set_fact:
+    dedicated_hostname: "{{ hostnames[0] ~ ('.' ~ base_domain if use_base_domain | bool else '') }}"
+  when: kind in ['deployment', 'statefulset'] and tls_mode == 'dedicated' and expose | bool
+
+- name: Render ListenerSet (dedicated TLS)
+  ansible.builtin.template:
+    src: ../../common/templates/listenerset.yaml.j2
+    dest: "/tmp/app-{{ name }}-listenerset.yaml"
+    mode: "0644"
+  when: kind in ['deployment', 'statefulset'] and tls_mode == 'dedicated' and expose | bool
+
+- name: Apply ListenerSet (dedicated TLS)
+  ansible.builtin.shell:
+    cmd: "kubectl apply -f /tmp/app-{{ name }}-listenerset.yaml"
+  changed_when: false
+  when: kind in ['deployment', 'statefulset'] and tls_mode == 'dedicated' and expose | bool

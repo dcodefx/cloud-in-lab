@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+{{ '#' }} alert.sh — systemd OnFailure hook (produced by roles/maintenance — do not edit by hand)
+{{ '#' }} Usage: alert.sh <unit-name>   (OnFailure={{ m_prefix }}-alert@%n.service)
+{{ '#' }} NO MAIL: writes the failure as a .prom metric immediately; the Prometheus/Alertmanager
+{{ '#' }} chain raises the alert (weekly/monthly jobs don't wait 9 days for the freshness threshold).
+{{ '#' }} RULE: never write tokens/keys/passwords into .prom files.
+{{ '#' }} LABEL: backup_job= not job= — Prometheus overwrites a target's own job= with the
+{{ '#' }} scrape job, which hid every real job name. Keep backup_job= consistent with
+{{ '#' }} _common.sh:write_backup_metric and watchdog.sh.
+{{ '#' }}
+{{ '#' }} BU DOSYA, write_backup_metric ILE ORTAK SAHIPLIKTA: ikisi de <job>.prom yazar
+{{ '#' }} (biri basarida, bu biri OnFailure hatasi). backup_last_status tek degerli bir
+{{ '#' }} alan oldugu icin "son yazan kazanir" dogru semantiktir. Guvenli olmasi icin
+{{ '#' }} KURAL: yazar dosyanin TAMAMINI yazar, sahibi olmadigi seriyi SILMEZ.
+{{ '#' }} Eskiden bu script yalnizca status + hata damgasi yaziyordu; boylece
+{{ '#' }} backup_last_success_timestamp_seconds ve backup_max_age_seconds — yani
+{{ '#' }} BackupOverdue kuralinin iki girdisi — SILINIYORDU ve kural, tam da bir job
+{{ '#' }} basarisiz oldugunda no_data'ya dusuyordu. Onlar artik mevcut dosyadan
+{{ '#' }} oldugu gibi kopyalaniyor. Ilk hatada dosya yoksa bos gecilir.
+{{ '#' }} Metrik adlari ve alarm adi (BackupLastRunFailed) BILEREK degistirilmedi:
+{{ '#' }} operatorler alertname uzerinden routing/silence kuruyor olabilir.
+
+set -u
+job="${1:-}"
+job="${job#{{ m_prefix }}-}"
+job="${job%.service}"
+
+[ -n "$job" ] || exit 0
+
+d="{{ m_metrics }}"
+mkdir -p "$d" 2>/dev/null || exit 0
+now=$(date +%s)
+out="$d/${job}.prom"
+tmp="$d/.${job}.$$"
+
+# Sahibi olmadigimiz iki seriyi mevcut dosyadan tasli (yoksa bos = yazilmayacak).
+succ=""
+max=""
+if [ -f "$out" ]; then
+    succ=$(grep -E '^backup_last_success_timestamp_seconds\{' "$out" 2>/dev/null | tail -1 | awk '{print $NF}')
+    max=$(grep -E '^backup_max_age_seconds\{' "$out" 2>/dev/null | tail -1 | awk '{print $NF}')
+fi
+
+{
+    if [ -n "$succ" ]; then
+        echo "# HELP backup_last_success_timestamp_seconds Last successful backup run (unix epoch)"
+        echo "# TYPE backup_last_success_timestamp_seconds gauge"
+        echo "backup_last_success_timestamp_seconds{backup_job=\"${job}\"} ${succ}"
+    fi
+    echo "# HELP backup_last_status Last backup status: 1=ok 0=failed"
+    echo "# TYPE backup_last_status gauge"
+    echo "backup_last_status{backup_job=\"${job}\"} 0"
+    if [ -n "$max" ]; then
+        echo "# HELP backup_max_age_seconds Freshness threshold for this job (seconds)"
+        echo "# TYPE backup_max_age_seconds gauge"
+        echo "backup_max_age_seconds{backup_job=\"${job}\"} ${max}"
+    fi
+    echo "# HELP backup_last_failure_timestamp_seconds Last failed backup run (unix epoch)"
+    echo "# TYPE backup_last_failure_timestamp_seconds gauge"
+    echo "backup_last_failure_timestamp_seconds{backup_job=\"${job}\"} ${now}"
+} > "$tmp" 2>/dev/null && mv -f "$tmp" "$out"
+
+exit 0

@@ -1,0 +1,7 @@
+---
+# openbao-metrics-exporter — app'e özgü OpenBao değerleri (tek kaynak).
+# Generic motor (app-deploy) buradaki anahtarları okur.
+openbao_scripts_cm: openbao-metrics-exporter-scripts
+openbao_script_file: openbao-metrics-exporter.py
+openbao_approle_role_id_path: /mnt/approle/role_id
+openbao_approle_secret_id_path: /mnt/approle/secret_id

@@ -1,0 +1,77 @@
+---
+- name: Wait for Cilium to be fully operational (pod networking + service translation ready)
+  ansible.builtin.command:
+    cmd: cilium status --wait --wait-duration 30s
+  register: _cilium_wait
+  until: _cilium_wait.rc == 0
+  retries: 10
+  delay: 10
+  changed_when: false
+
+- name: Wait for CoreDNS deployment to become available
+  ansible.builtin.shell: |
+    kubectl -n kube-system wait --for=condition=Available deployment/coredns --timeout=60s
+  register: _coredns_avail
+  until: _coredns_avail.rc == 0
+  retries: 20
+  delay: 15
+  changed_when: false
+
+- name: Wait for CoreDNS pods to become ready
+  ansible.builtin.shell: |
+    kubectl -n kube-system wait --for=condition=Ready pod -l k8s-app=kube-dns --timeout=60s
+  register: _coredns_ready
+  until: _coredns_ready.rc == 0
+  retries: 20
+  delay: 15
+  changed_when: false
+
+- name: Capture CoreDNS diagnostics if still not ready
+  ansible.builtin.shell: |
+    echo "=== COREDNS PODS ==="; kubectl -n kube-system get pods -l k8s-app=kube-dns -o wide
+    echo "=== COREDNS LOGS ==="; kubectl -n kube-system logs -l k8s-app=kube-dns --tail=30
+    echo "=== CILIUM STATUS ==="; cilium status || true
+  register: _coredns_diag
+  changed_when: false
+  when: _coredns_ready is not succeeded
+
+- name: Fail if CoreDNS is not ready (blocked masked failure)
+  ansible.builtin.fail:
+    msg: |
+      CoreDNS pods are not Ready.
+      CoreDNS cannot reach kube-apiserver until Cilium kubeProxyReplacement is ready
+      (kubernetes plugin "Still waiting on: kubernetes" / i/o timeout).
+      Inspect the diagnostic output above:
+      - do coredns logs contain "plugin/ready: Still waiting on: kubernetes" / "i/o timeout"?
+      - is cilium status OK (agent/operator Ready)?
+      - Fix: wait until Cilium is fully ready; if needed run `cilium status --wait` or
+        increase CoreDNS retries. Check k8sServiceHost/Port values.
+  when: _coredns_ready is not succeeded
+
+- name: Verify all nodes are Ready
+  ansible.builtin.shell: |
+    set -o pipefail
+    if kubectl get nodes --no-headers >/dev/null 2>&1; then
+      nodes=$(kubectl get nodes --no-headers | awk '{print $2}')
+      if printf '%s\n' "$nodes" | grep -qv '^Ready$'; then echo "not-ready"; else echo "all-ready"; fi
+    else
+      echo "not-ready"
+    fi
+  register: _nodes_ready
+  until: _nodes_ready.stdout == "all-ready"
+  retries: 30
+  delay: 10
+  changed_when: false
+
+- name: Verify cluster DNS resolution works (end-to-end nslookup)
+  ansible.builtin.shell: |
+    name="cilium-dns-probe"
+    kubectl delete pod "$name" --ignore-not-found >/dev/null 2>&1 || true
+    kubectl run "$name" --image=busybox --restart=Never --command -- sleep 3600 >/dev/null
+    kubectl wait --for=condition=Ready pod/"$name" --timeout=120s >/dev/null 2>&1 || true
+    kubectl exec "$name" -- nslookup kubernetes.default.svc.cluster.local >/dev/null
+    rc=$?
+    kubectl delete pod "$name" --ignore-not-found >/dev/null 2>&1 || true
+    exit $rc
+  register: _dns_probe
+  changed_when: false

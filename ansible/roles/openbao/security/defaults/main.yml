@@ -1,0 +1,258 @@
+---
+# OpenBao Engine Mount Ayarları — bootstrap.yml tarafından kullanılır
+openbao_kv_mount: secret
+openbao_approle_mount: approle
+openbao_transit_mount: transit
+openbao_dynamic_engine_mount: database
+openbao_k8s_auth_mount: kubernetes
+openbao_pki_mount: pki
+openbao_pki_int_mount: pki-int
+openbao_pki_domain: "tofu.lan"
+openbao_pki_role: "tofu-lan"
+openbao_pki_root_ca_ttl: "87600h"
+openbao_pki_int_ca_ttl: "43800h"
+openbao_pki_cert_ttl: "2160h"
+
+
+# AppRole auth (demo Job'ları + cert-manager bu yolu kullanır; CSI provider SA-JWT kullanır, bkz. plan Faz 1.5)
+# k8s-app policy artık template'den render edilir (k8s-app-templated.hcl.j2),
+# Kubernetes auth accessor ID ile scope-bazlı izolasyon sağlar.
+openbao_approle_policies:
+  - name: cert-manager
+    paths:
+      - path: "pki-int/sign/{{ openbao_pki_role }}"
+        caps: ["create", "update"]
+      - path: "pki-int/sign/dedicated-*"
+        caps: ["create", "update"]
+      - path: "pki-int/cert/*"
+        caps: ["read"]
+
+openbao_approle_roles:
+  - role_name: k8s-csi
+    policies: ["k8s-app"]
+    token_ttl: 1h
+    token_max_ttl: 24h
+    token_num_uses: 0
+  - role_name: cert-manager
+    policies: ["cert-manager"]
+    token_ttl: 1h
+    token_max_ttl: 24h
+    token_num_uses: 0
+
+# Platform RBAC (P1–P6)
+# rbac-platform.yml tarafından oluşturulur — root token'la, bir kez.
+# ============================================
+openbao_platform_policies:
+  - name: pki-signer
+    paths:
+      - path: "auth/token/lookup-self"
+        caps: ["read"]
+      - path: "auth/token/renew-self"
+        caps: ["update"]
+      - path: "pki-int/sign/{{ openbao_pki_role }}"
+        caps: ["create", "update"]
+      - path: "pki-int/sign/dedicated-*"
+        caps: ["create", "update"]
+  - name: pki-manager
+    paths:
+      - path: "auth/token/lookup-self"
+        caps: ["read"]
+      - path: "auth/token/renew-self"
+        caps: ["update"]
+      - path: "pki-int/roles/dedicated-*"
+        caps: ["create", "read", "update", "delete"]
+        denied_parameters:
+          allow_any_name: ["true"]
+  - name: monitor
+    paths:
+      - path: "auth/token/lookup-self"
+        caps: ["read"]
+      - path: "auth/token/renew-self"
+        caps: ["update"]
+      - path: "secret/data/*"
+        caps: ["read"]
+      - path: "secret/metadata/*"
+        caps: ["list", "read"]
+      - path: "sys/health"
+        caps: ["read"]
+  - name: ops-admin
+    paths:
+      - path: "auth/token/lookup-self"
+        caps: ["read"]
+      - path: "auth/token/renew-self"
+        caps: ["update"]
+      - path: "secret/*"
+        caps: ["create", "read", "update", "delete", "list"]
+      - path: "transit/*"
+        caps: ["create", "read", "update", "delete", "list"]
+      - path: "pki/*"
+        caps: ["create", "read", "update", "delete", "list"]
+      - path: "pki-int/*"
+        caps: ["create", "read", "update", "delete", "list"]
+      - path: "database/*"
+        caps: ["create", "read", "update", "delete", "list"]
+      - path: "auth/approle/role/*"
+        caps: ["create", "read", "update", "delete", "list"]
+      - path: "auth/kubernetes/config"
+        caps: ["create", "read", "update"]
+      - path: "auth/kubernetes/role/*"
+        caps: ["create", "read", "update"]
+      - path: "sys/auth"
+        caps: ["read", "list"]
+      - path: "sys/mounts"
+        caps: ["read", "list"]
+      - path: "sys/policies/acl/*"
+        caps: ["create", "read", "update", "delete", "list"]
+      - path: "sys/generate-root-token"
+        caps: ["deny"]
+      - path: "sys/seal"
+        caps: ["deny"]
+  # Raft snapshot AGENT'ı (7/24 açık, P5/B10) — bilinçli read-only.
+  # "raft deposunu ezme" kabiliyeti sürekli açık bir yetki olmamalı; restore
+  # ayrı profille (bao-raft-restore) yapılır. Resmi openbao-snapshot-agent
+  # policy'si de read-only'dir (docs/vm-configuration.md).
+  - name: bao-raft-agent
+    paths:
+      - path: "auth/token/lookup-self"
+        caps: ["read"]
+      - path: "auth/token/renew-self"
+        caps: ["update"]
+      - path: "sys/storage/raft/snapshot"
+        caps: ["read"]
+  # Raft RESTORE (insan tetikli, P6/B10+B11). read+update tek yolda
+  # birlikte durur: restore önce rollback snapshot'ı okur, sonra yazar.
+  - name: bao-raft-restore
+    paths:
+      - path: "auth/token/lookup-self"
+        caps: ["read"]
+      - path: "auth/token/renew-self"
+        caps: ["update"]
+      - path: "sys/storage/raft/snapshot"
+        caps: ["read", "update"]
+      - path: "sys/storage/raft/snapshot-force"
+        caps: ["read", "update"]
+
+openbao_platform_roles:
+  - role_name: pki-signer
+    token_policies: ["pki-signer"]
+    token_ttl: 1h
+    token_max_ttl: 24h
+    token_num_uses: 0
+    token_type: service
+  - role_name: pki-manager
+    token_policies: ["pki-manager"]
+    token_ttl: 15m
+    token_max_ttl: 1h
+    token_num_uses: 0
+    token_type: service
+  - role_name: monitor
+    token_policies: ["monitor"]
+    token_ttl: 1h
+    token_max_ttl: 24h
+    token_num_uses: 0
+    token_type: service
+  - role_name: ops-admin
+    token_policies: ["ops-admin"]
+    token_ttl: 4h
+    token_max_ttl: 8h
+    token_num_uses: 0
+    token_type: service
+  # ttl 2h = resmi openbao-snapshot-agent değeri. token_num_uses 0: agent'ın
+  # kaç API çağrısı yapacağı bilinmiyor (auto_auth renew dahil) — sayaç
+  # koymak sessiz 403 üretir. Kısıtlama policy + TTL ile yapılır.
+  - role_name: bao-raft-agent
+    token_policies: ["bao-raft-agent"]
+    token_ttl: 2h
+    token_max_ttl: 4h
+    token_num_uses: 0
+    token_type: service
+  # Restore tek seferlik manuel işlem: kısa TTL, geniş yetki.
+  - role_name: bao-raft-restore
+    token_policies: ["bao-raft-restore"]
+    token_ttl: 1h
+    token_max_ttl: 1h
+    token_num_uses: 0
+    token_type: service
+
+# Platform credential'ları (SABİT) — her zaman üretilir.
+# İsteğe bağlı ekler openbao.credential_produce_list (all.yml) ile birleşir.
+# Yalnızca openbao_platform_roles'da tanımlı roller yazılmalı (role_id GET 404 → fail).
+openbao_platform_credentials:
+  - ops-admin
+  - pki-manager
+  - monitor
+  - bao-raft-agent
+  - bao-raft-restore
+
+
+
+# Workload templated policy'leri + profil süreleri — TEK KAYNAK (plan F)
+# (approle-issuer kodda tanımlı değil — bkz. docs/tr/openbao/openbao-rbac.md §11)
+# token_ttl/token_max_ttl profil tanımının sabit parçasıdır (süre yetkinin parçası).
+# extra: AppRole API parametreleri kancası (token_period, token_bound_cidrs, vb.)
+openbao_workload_profiles:
+  - name: reader
+    policy: workload-reader-templated
+    token_ttl: 1h
+    token_max_ttl: 24h
+    renewable: true
+    extra: {}
+  - name: metrics-reader
+    policy: workload-metrics-reader-templated
+    token_ttl: 1h
+    token_max_ttl: 24h
+    renewable: true
+    extra: {}
+  - name: operator
+    policy: workload-operator-templated
+    token_ttl: 1h
+    token_max_ttl: 24h
+    renewable: true
+    extra: {}
+  - name: job-run
+    policy: workload-job-run-templated
+    token_ttl: 30m
+    token_max_ttl: 1h
+    renewable: false
+    extra: {}
+  - name: transit-user
+    policy: workload-transit-user-templated
+    token_ttl: 30m
+    token_max_ttl: 1h
+    renewable: false
+    extra: {}
+  - name: deployer
+    policy: workload-deployer-templated
+    token_ttl: 15m
+    token_max_ttl: 1h
+    renewable: false
+    extra: {}
+  - name: kv-owner
+    policy: workload-kv-owner-templated
+    token_ttl: 1h
+    token_max_ttl: 8h
+    renewable: true
+    extra: {}
+  - name: db-consumer
+    policy: workload-db-consumer-templated
+    token_ttl: 1h
+    token_max_ttl: 24h
+    renewable: true
+    extra: {}
+
+# Transit key self-service — transit kullanabilen profiller (k8s-apps/app-deploy/tasks/produce-transit-key.yml)
+openbao_transit_capable_profiles:
+  - operator
+  - job-run
+  - transit-user
+
+# Static secrets to store
+openbao_static_secrets:
+  - path: "{{ cluster_name | default('homelab') }}/k8s-admin"
+    data:
+      kubeconfig: ""
+      admin_token: ""
+  - path: "{{ cluster_name | default('homelab') }}/backup"
+    data:
+      garage_access_key: ""
+      garage_secret_key: ""

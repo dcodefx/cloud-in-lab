@@ -1,0 +1,37 @@
+---
+- name: Pre-check OpenBao config and credentials
+  hosts: k8s_master[0]
+  become: false
+  gather_facts: false
+  tasks:
+    - name: Load openbao config json
+      ansible.builtin.slurp:
+        # playbook_dir import edilen dosyanin kendi dizini (playbooks/pre/) —
+        # kanitlanmis; inventory_dir magic var'i core 2.21'de tanimsiz.
+        src: "{{ playbook_dir }}/../../outputs/openbao/openbao-config.json"
+      register: _k8s_bao_config
+      delegate_to: localhost
+      become: false
+
+    - name: Fail if openbao config not found
+      ansible.builtin.fail:
+        msg: "outputs/openbao/openbao-config.json not found. Run the openbao.yml playbook first."
+      when: _k8s_bao_config is failed
+
+    - name: Set OpenBao host/address from config
+      ansible.builtin.set_fact:
+        openbao_host: "{{ (_k8s_bao_config.content | b64decode | from_json).host }}"
+        openbao_address: "{{ (_k8s_bao_config.content | b64decode | from_json).address }}"
+        cacheable: true
+
+    - name: Check openbao credentials exists
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../../outputs/openbao/openbao-credentials.yml"
+      register: _bao_creds_stat
+      delegate_to: localhost
+      become: false
+
+    - name: Fail if openbao credentials not found
+      ansible.builtin.fail:
+        msg: "outputs/openbao/openbao-credentials.yml not found. Run the openbao.yml playbook first."
+      when: not _bao_creds_stat.stat.exists

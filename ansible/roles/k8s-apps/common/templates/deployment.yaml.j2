@@ -1,0 +1,210 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ name }}
+  namespace: {{ namespace }}
+  labels:
+    app.kubernetes.io/managed-by: app-deploy
+    app.kubernetes.io/name: {{ name }}
+{% if app.labels | default({}) %}
+{{ app.labels | to_nice_yaml(indent=2) | indent(4, True) }}
+{% endif %}
+{% if app.annotations | default({}) %}
+  annotations: {{ app.annotations | to_json }}
+{% endif %}
+spec:
+  replicas: {{ replicas | default(1) }}
+{% if app.strategy | default({}) %}
+  strategy: {{ app.strategy | to_json }}
+{% endif %}
+{% if app.minReadySeconds is defined %}
+  minReadySeconds: {{ app.minReadySeconds }}
+{% endif %}
+{% if app.revisionHistoryLimit is defined %}
+  revisionHistoryLimit: {{ app.revisionHistoryLimit }}
+{% endif %}
+{% if app.progressDeadlineSeconds is defined %}
+  progressDeadlineSeconds: {{ app.progressDeadlineSeconds }}
+{% endif %}
+{% if app.paused is defined %}
+  paused: {{ app.paused | to_json }}
+{% endif %}
+  selector:
+    matchLabels:
+      app: {{ name }}
+  template:
+    metadata:
+      labels:
+        app: {{ name }}
+{% if openbao_enabled | default(false) | bool %}
+        homelab.io/allow-openbao-egress: "true"
+{% endif %}
+{% if app.templateLabels | default({}) %}
+{{ app.templateLabels | to_nice_yaml(indent=2) | indent(8, True) }}
+{% endif %}
+{% if app.templateAnnotations | default({}) %}
+      annotations: {{ app.templateAnnotations | to_json }}
+{% endif %}
+    spec:
+{% if openbao_enabled | default(false) | bool %}
+      serviceAccountName: {{ ob_scope | default(name) }}
+{% elif app.serviceAccountName | default('') %}
+      serviceAccountName: {{ app.serviceAccountName }}
+{% endif %}
+{% if app.imagePullSecrets | default([]) %}
+      imagePullSecrets: {{ app.imagePullSecrets | to_json }}
+{% endif %}
+{% if app.podSecurityContext | default({}) %}
+      securityContext: {{ app.podSecurityContext | to_json }}
+{% endif %}
+{% if app.hostNetwork is defined %}
+      hostNetwork: {{ app.hostNetwork | to_json }}
+{% endif %}
+{% if app.dnsPolicy is defined %}
+      dnsPolicy: {{ app.dnsPolicy }}
+{% endif %}
+{% if app.dnsConfig | default({}) %}
+      dnsConfig: {{ app.dnsConfig | to_json }}
+{% endif %}
+{% if app.nodeSelector | default({}) %}
+      nodeSelector: {{ app.nodeSelector | to_json }}
+{% endif %}
+{% if app.affinity | default({}) %}
+      affinity: {{ app.affinity | to_json }}
+{% endif %}
+{% if app.tolerations | default([]) %}
+      tolerations: {{ app.tolerations | to_json }}
+{% endif %}
+{% if app.topologySpreadConstraints | default([]) %}
+      topologySpreadConstraints: {{ app.topologySpreadConstraints | to_json }}
+{% endif %}
+{% if app.terminationGracePeriodSeconds is defined %}
+      terminationGracePeriodSeconds: {{ app.terminationGracePeriodSeconds }}
+{% endif %}
+{% if app.priorityClassName | default('') %}
+      priorityClassName: {{ app.priorityClassName }}
+{% endif %}
+{% if app.schedulerName is defined %}
+      schedulerName: {{ app.schedulerName }}
+{% endif %}
+      containers:
+        - name: {{ name }}
+          image: {{ image }}
+{% if app.command | default([]) %}
+          command: {{ app.command | to_json }}
+{% elif openbao_script_file is defined %}
+          command: ["python", "/scripts/{{ openbao_script_file }}"]
+{% endif %}
+{% if app.args | default([]) %}
+          args: {{ app.args | to_json }}
+{% endif %}
+{% if app.workingDir is defined %}
+          workingDir: {{ app.workingDir }}
+{% endif %}
+          ports:
+            - containerPort: {{ container_port | default(port | default(80)) }}
+{% if app.imagePullPolicy is defined %}
+          imagePullPolicy: {{ app.imagePullPolicy }}
+{% endif %}
+{% set _env = app.env | default({}) %}
+{% if openbao_enabled | default(false) | bool %}
+{% set _openbao_env = {
+  'OPENBAO_ADDR': openbao_address,
+  'APPROLE_ROLE_ID_PATH': openbao_approle_role_id_path | default('/mnt/approle/role_id'),
+  'APPROLE_SECRET_ID_PATH': openbao_approle_secret_id_path | default('/mnt/approle/secret_id')
+} %}
+{% set _env = _env | combine(_openbao_env) %}
+{% endif %}
+{% if _env | length > 0 %}
+          env:
+{% for k, v in _env.items() %}
+            - name: "{{ k }}"
+              value: "{{ v }}"
+{% endfor %}
+{% endif %}
+{% if app.envFrom | default([]) %}
+          envFrom: {{ app.envFrom | to_json }}
+{% endif %}
+{% if app.resources | default({}) %}
+          resources:
+{{ app.resources | to_nice_yaml(indent=2) | indent(12, True) }}
+{% endif %}
+{% if app.probes is defined %}
+{% if app.probes.liveness is defined %}
+          livenessProbe:
+{{ app.probes.liveness | to_nice_yaml(indent=2) | indent(12, True) }}
+{% endif %}
+{% if app.probes.readiness is defined %}
+          readinessProbe:
+{{ app.probes.readiness | to_nice_yaml(indent=2) | indent(12, True) }}
+{% endif %}
+{% if app.probes.startup is defined %}
+          startupProbe:
+{{ app.probes.startup | to_nice_yaml(indent=2) | indent(12, True) }}
+{% endif %}
+{% endif %}
+{% set _vol_mounts = app.volumeMounts | default([]) %}
+{% if openbao_enabled | default(false) | bool %}
+{% set _vol_mounts = _vol_mounts + [{'name': 'approle', 'mountPath': '/mnt/approle', 'readOnly': true}] %}
+{% endif %}
+{% if openbao_scripts_cm is defined and openbao_script_file is defined %}
+{% set _vol_mounts = _vol_mounts + [{'name': 'scripts', 'mountPath': '/scripts', 'readOnly': true}] %}
+{% endif %}
+{% if _vol_mounts | length > 0 %}
+          volumeMounts:
+{% for vm in _vol_mounts %}
+            - name: {{ vm.name }}
+              mountPath: {{ vm.mountPath }}
+{% if vm.subPath is defined %}
+              subPath: {{ vm.subPath }}
+{% endif %}
+{% if vm.readOnly is defined %}
+              readOnly: {{ vm.readOnly | to_json }}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% if app.containerSecurityContext | default({}) %}
+          securityContext: {{ app.containerSecurityContext | to_json }}
+{% endif %}
+{% if app.lifecycle is defined %}
+          lifecycle: {{ app.lifecycle | to_json }}
+{% endif %}
+{% if app.stdin is defined %}
+          stdin: {{ app.stdin | to_json }}
+{% endif %}
+{% if app.tty is defined %}
+          tty: {{ app.tty | to_json }}
+{% endif %}
+{% if app.initContainers | default([]) %}
+      initContainers: {{ app.initContainers | to_json }}
+{% endif %}
+{% set _volumes = app.volumes | default([]) %}
+{% if openbao_enabled | default(false) | bool %}
+{% set _volumes = _volumes + [{'name': 'approle', 'csi': {'driver': 'secrets-store.csi.k8s.io', 'readOnly': true, 'volumeAttributes': {'secretProviderClass': ob_scope ~ '-approle'}}}] %}
+{% endif %}
+{% if openbao_scripts_cm is defined and openbao_script_file is defined %}
+{% set _volumes = _volumes + [{'name': 'scripts', 'configMap': {'name': openbao_scripts_cm}}] %}
+{% endif %}
+{% if _volumes | length > 0 %}
+      volumes:
+{% for v in _volumes %}
+        - name: {{ v.name }}
+{% if v.csi is defined %}
+          csi:
+            driver: {{ v.csi.driver }}
+            readOnly: {{ v.csi.readOnly | to_json }}
+            volumeAttributes:
+              secretProviderClass: {{ v.csi.volumeAttributes.secretProviderClass }}
+{% elif v.configMap is defined %}
+          configMap:
+            name: {{ v.configMap.name }}
+{% elif v.secret is defined %}
+          secret:
+            secretName: {{ v.secret.secretName }}
+{% else %}
+{% for key, val in v.items() if key != 'name' %}
+{{ {key: val} | to_nice_yaml(indent=2) | indent(10, True) }}
+{% endfor %}
+{% endif %}
+{% endfor %}
+{% endif %}

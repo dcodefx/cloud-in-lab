@@ -1,0 +1,30 @@
+---
+- name: Deploy each app
+  ansible.builtin.include_tasks: deploy-app.yml
+  loop: "{{ apps | default([]) | selectattr('enable', 'equalto', true) | list }}"
+  loop_control:
+    loop_var: app
+    label: "{{ app.name }}"
+  # Tek app calistirma: -e app_filter=<name> (bos ise tum enable:true app'ler)
+  when: app_filter | default('') | length == 0 or app.name == app_filter
+  vars:
+    name: "{{ app.name }}"
+    namespace: "{{ app.namespace | default(app.name) }}"
+    kind: "{{ app.kind | default('deployment') }}"
+    image: "{{ app.image }}"
+    port: "{{ app.port | default(80) }}"
+    container_port: "{{ app.container_port | default(app.port | default(80)) }}"
+    replicas: "{{ app.replicas | default(1) }}"
+    hostnames_raw: "{{ app.hostnames | default(app.name) }}"
+    hostnames: "{{ hostnames_raw.split(',') if hostnames_raw is string else hostnames_raw }}"
+    use_base_domain: "{{ app.use_base_domain | default(true) }}"
+    tls_mode: "{{ (app.tls | default({})).mode | default('shared') }}"
+    tls_domains: "{{ (app.tls | default({})).domains | default(hostnames_raw.split(',') if hostnames_raw is string else hostnames_raw) }}"
+    schedule: "{{ app.schedule | default('') }}"
+    spc: "{{ app.spc | default({}) }}"
+    configmaps: "{{ app.configmaps | default([]) }}"
+    expose: "{{ app.expose | default(true) }}"
+    monitoring: "{{ app.monitoring | default({}) }}"
+    egress_fqdn: "{{ app.egress_fqdn | default([]) }}"
+    openbao_enabled: "{{ app.openbao.enable | default(false) | bool }}"
+    ob_scope: "{{ app.name }}"

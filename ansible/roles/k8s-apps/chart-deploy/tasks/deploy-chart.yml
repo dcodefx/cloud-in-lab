@@ -1,0 +1,164 @@
+---
+# Generic chart kurulumu — deploy-app.yml karşılığı.
+# Chart'a özel data charted/<chart_key>/ altındadır (vars + templates).
+# Arayüz: chart_key (örn. prom_stack), chart_cfg (merge edilmiş dict).
+
+- name: Load per-chart vars (charted/<key>/vars/main.yml)
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/../charted/{{ chart_key }}/vars/main.yml"
+  failed_when: false
+
+- name: Merge chart vars + group_vars (deep, recursive)
+  ansible.builtin.set_fact:
+    _chart_base: "{{ chart_defaults | default({}) | combine(charted[chart_key] | default({}), recursive=true) }}"
+
+- name: Init chart config from base
+  ansible.builtin.set_fact:
+    chart_cfg: "{{ _chart_base }}"
+
+- name: Validate required chart coordinates
+  ansible.builtin.assert:
+    that:
+      - chart_cfg.release_name | default('') | length > 0
+      - chart_cfg.chart | default('') | length > 0
+      - chart_cfg.namespace | default('') | length > 0
+    fail_msg: "{{ chart_key }}: 'release_name', 'chart', and 'namespace' are required. Define them in charted/{{ chart_key }}/vars/main.yml or group_vars (charted.{{ chart_key }})."
+
+- name: Derive service names live from key (release_name + "-" + key, subdomain stays separate)
+  ansible.builtin.set_fact:
+    chart_cfg: "{{ chart_cfg | combine({item.key: {'service': _chart_base.release_name + '-' + item.key}}, recursive=true) }}"
+  loop: "{{ _chart_base | dict2items | selectattr('value.subdomain', 'defined') }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Create chart namespace
+  ansible.builtin.shell: |
+    kubectl create namespace {{ chart_cfg.namespace }} --dry-run=client -o yaml | kubectl apply -f -
+  register: _chart_ns
+  changed_when: "'created' in _chart_ns.stdout"
+
+- name: Find chart Cilium policy templates
+  ansible.builtin.find:
+    paths: "{{ role_path }}/../charted/{{ chart_key }}/templates"
+    patterns: "cilium-*.j2"
+  register: _chart_cilium_tpls
+  delegate_to: localhost
+  changed_when: false
+  failed_when: false
+
+- name: Render chart Cilium policies
+  ansible.builtin.template:
+    src: "{{ item.path }}"
+    dest: "/tmp/{{ chart_key }}-{{ (item.path | basename)[:-3] }}"
+    mode: "0644"
+  loop: "{{ _chart_cilium_tpls.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+
+- name: Apply chart Cilium policies
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/{{ chart_key }}-{{ (item.path | basename)[:-3] }}
+  loop: "{{ _chart_cilium_tpls.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  register: _chart_cilium_apply
+  changed_when: _chart_cilium_apply.results | default([]) | map(attribute='stdout') | join(' ') is search('configured')
+
+- name: Ensure chart Helm repository
+  kubernetes.core.helm_repository:
+    name: "{{ chart_cfg.repo_name }}"
+    repo_url: "{{ chart_cfg.repo_url }}"
+  when:
+    - chart_cfg.repo_name | default('') | length > 0
+    - chart_cfg.repo_url | default('') | length > 0
+
+- name: Check per-chart values template
+  ansible.builtin.stat:
+    path: "{{ role_path }}/../charted/{{ chart_key }}/templates/values.yaml.j2"
+  register: _chart_values_tpl
+  delegate_to: localhost
+  changed_when: false
+
+- name: Select per-chart values template
+  ansible.builtin.set_fact:
+    _chart_values_src: "{{ role_path }}/../charted/{{ chart_key }}/templates/values.yaml.j2"
+  when: _chart_values_tpl.stat.exists
+  changed_when: false
+
+- name: Fall back to common values skeleton (nameOverride + helm_values passthrough)
+  ansible.builtin.set_fact:
+    _chart_values_src: "{{ role_path }}/../common/templates/helm-values.yaml.j2"
+  when:
+    - not _chart_values_tpl.stat.exists
+    - chart_cfg.helm_values | default({}) | length > 0
+  changed_when: false
+
+- name: Warn if Grafana admin password is empty
+  ansible.builtin.debug:
+    msg: "INFO: charted.{{ chart_key }}.grafana.admin_password is empty — the Grafana Helm chart will generate a random admin password (kubectl -n {{ chart_cfg.namespace }} get secret {{ chart_cfg.release_name }}-grafana -o jsonpath='{.data.admin-password}' | base64 -d). For production, set a strong password in k8s_apps.yml."
+  when:
+    - _chart_values_tpl.stat.exists
+    - chart_cfg.grafana is defined
+    - chart_cfg.grafana.admin_password | default('') | length == 0
+
+- name: Render Helm values to temp file
+  ansible.builtin.template:
+    src: "{{ _chart_values_src }}"
+    dest: "/tmp/{{ chart_key }}-values.yaml"
+    mode: "0644"
+  when: _chart_values_src is defined
+
+- name: Build values files list (empty = Helm chart defaults)
+  ansible.builtin.set_fact:
+    _chart_values_files: "{{ ['/tmp/' + chart_key + '-values.yaml'] if _chart_values_src is defined else [] }}"
+  changed_when: false
+
+- name: Install/upgrade chart (idempotent — no-op if unchanged)
+  kubernetes.core.helm:
+    name: "{{ chart_cfg.release_name }}"
+    chart_ref: "{{ chart_cfg.chart }}"
+    chart_version: "{{ chart_cfg.chart_version }}"
+    release_namespace: "{{ chart_cfg.namespace }}"
+    values_files: "{{ _chart_values_files }}"
+    reset_values: false
+    wait: true
+    timeout: "15m"
+    atomic: true
+    kubeconfig: "{{ ansible_facts['user_dir'] }}/.kube/config"
+
+- name: Reset chart routes
+  ansible.builtin.set_fact:
+    chart_routes: []
+
+- name: Build chart routes from components with subdomain
+  ansible.builtin.set_fact:
+    chart_routes: "{{ chart_routes + [{'subdomain': item.value.subdomain, 'service': item.value.service, 'port': item.value.port}] }}"
+  loop: "{{ chart_cfg | dict2items | selectattr('value.subdomain', 'defined') }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: item.value.enabled | default(true) | bool
+  changed_when: false
+
+- name: Render HTTPRoutes
+  ansible.builtin.template:
+    src: ../../common/templates/httproute.yaml.j2
+    dest: "/tmp/{{ chart_key }}-httproute-{{ item.subdomain }}.yaml"
+    mode: "0644"
+  loop: "{{ chart_routes }}"
+  loop_control:
+    label: "{{ item.subdomain }}"
+  vars:
+    httproute_name: "{{ item.subdomain }}-route"
+    httproute_hostnames: "{{ item.subdomain }}"
+    httproute_namespace: "{{ chart_cfg.namespace }}"
+    httproute_service: "{{ item.service }}"
+    httproute_port: "{{ item.port }}"
+    httproute_use_base_domain: true
+
+- name: Apply HTTPRoutes
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/{{ chart_key }}-httproute-{{ item.subdomain }}.yaml
+  loop: "{{ chart_routes }}"
+  loop_control:
+    label: "{{ item.subdomain }}"
+  changed_when: false

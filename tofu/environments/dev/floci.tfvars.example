@@ -1,0 +1,5 @@
+# Dev - Floci AWS Emulator (VM)
+cpu_cores = 2
+vm_memory = 4096
+disk_size = 40
+ip_offset = 195

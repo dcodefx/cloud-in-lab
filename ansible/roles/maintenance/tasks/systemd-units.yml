@@ -1,0 +1,133 @@
+---
+# ── 6) systemd units — job service/timer ────────────────────────────────
+- name: Write backup service units
+  when: m_jobs_local | length > 0
+  ansible.builtin.template:
+    src: backup.service.j2
+    dest: "/etc/systemd/system/{{ m_prefix }}-{{ item.key }}.service"
+    mode: "0644"
+  loop: "{{ m_jobs_local }}"
+  notify: systemd reload
+
+# ── 6b) İLK KOŞU: her tier birer tane backup ─────────────────────────────
+# Henüz yedeği bulunmayan (last-success oluşmamış) her job bir kez hemen
+# çalıştırılır: ilk kurulumda 3 tier'ın da (d/w/m) yedeği alınır, SONRA
+# deklaratif systemd takvimine geçer.
+- name: "Check last-success state (first run seeds if absent)"
+  when: m_jobs_local | length > 0
+  ansible.builtin.stat:
+    path: "{{ m_root }}/maintenance/.state/{{ item.key }}.last-success"
+  register: m_last_success_stat
+  changed_when: false
+  loop: "{{ m_jobs_local }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+# Sıralı loop: 6 restic aynı anda Garage'a yüklenmez. Başarısız job play'i
+# DÜŞÜRMEDİĞİ için sonraki koşuda tekrar denenir.
+- name: "FIRST RUN: seed one backup per job without last-success (d/w/m)"
+  when:
+    - m_jobs_local | length > 0
+    - not (item.stat.exists | default(false))
+  ansible.builtin.systemd_service:
+    name: "{{ m_prefix }}-{{ item.item.key }}.service"
+    state: started
+    daemon_reload: true
+  register: m_seed
+  failed_when: false
+  changed_when: false
+  loop: "{{ m_last_success_stat.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.key | default('?') }}"
+
+- name: Write backup timer units
+  when: m_jobs_local | length > 0
+  ansible.builtin.template:
+    src: backup.timer.j2
+    dest: "/etc/systemd/system/{{ m_prefix }}-{{ item.key }}.timer"
+    mode: "0644"
+  loop: "{{ m_jobs_local }}"
+  notify: systemd reload
+
+# ── 7) OnFailure alert hook (writes metric — no mail) ───────────────────
+- name: alert.sh (OnFailure hook — writes failure metric)
+  when: m_jobs_local | length > 0
+  ansible.builtin.template:
+    src: alert.sh.j2
+    dest: "{{ m_conf }}/backup/alert.sh"
+    mode: "0750"
+
+- name: alert@.service unit
+  when: m_jobs_local | length > 0
+  ansible.builtin.template:
+    src: "alert@.service.j2"
+    dest: "/etc/systemd/system/{{ m_prefix }}-alert@.service"
+    mode: "0644"
+  notify: systemd reload
+
+# ── 8) Watchdog — independent "did it run" check (from systemd journal) ─
+- name: watchdog.sh + watchdog.jobs
+  when: m_jobs_local | length > 0
+  ansible.builtin.template:
+    src: "{{ item.t }}"
+    dest: "{{ m_conf }}/backup/{{ item.d }}"
+    mode: "{{ item.m }}"
+  loop:
+    - { t: watchdog.sh.j2, d: watchdog.sh, m: "0750" }
+    - { t: watchdog.jobs.j2, d: watchdog.jobs, m: "0644" }
+
+- name: watchdog service/timer units
+  when: m_jobs_local | length > 0
+  ansible.builtin.template:
+    src: "{{ item }}"
+    dest: "/etc/systemd/system/{{ m_prefix }}-watchdog.{{ 'service' if item == 'watchdog.service.j2' else 'timer' }}"
+    mode: "0644"
+  loop:
+    - watchdog.service.j2
+    - watchdog.timer.j2
+  notify: systemd reload
+
+# ── 9) restic check timer (weekly integrity) ────────────────────────────
+- name: check-repos.sh (restic check — verifies repos)
+  when: m_restic_jobs_local | length > 0
+  ansible.builtin.template:
+    src: check-repos.sh.j2
+    dest: "{{ m_conf }}/backup/check-repos.sh"
+    mode: "0750"
+
+- name: check service/timer units
+  when: m_restic_jobs_local | length > 0
+  ansible.builtin.template:
+    src: "{{ item }}"
+    dest: "/etc/systemd/system/{{ m_prefix }}-check.{{ 'service' if item == 'check.service.j2' else 'timer' }}"
+    mode: "0644"
+  loop:
+    - check.service.j2
+    - check.timer.j2
+  notify: systemd reload
+
+# ── 11) Activation (daemon_reload: new units loaded immediately) ─────────
+- name: Enable backup timers
+  when: m_jobs_local | length > 0
+  ansible.builtin.systemd:
+    name: "{{ m_prefix }}-{{ item.key }}.timer"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop: "{{ m_jobs_local }}"
+
+- name: Enable watchdog timer
+  when: m_jobs_local | length > 0
+  ansible.builtin.systemd:
+    name: "{{ m_prefix }}-watchdog.timer"
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Enable restic check timer
+  when: m_restic_jobs_local | length > 0
+  ansible.builtin.systemd:
+    name: "{{ m_prefix }}-check.timer"
+    enabled: true
+    state: started
+    daemon_reload: true

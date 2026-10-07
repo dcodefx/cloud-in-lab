@@ -1,0 +1,35 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-fqdn-egress-{{ name }}
+  namespace: {{ namespace }}
+  labels:
+    app.kubernetes.io/managed-by: app-deploy
+    app.kubernetes.io/name: {{ name }}
+spec:
+  description: "{{ name }} pod'larinin app-beyanli FQDN egress izinleri (self-service)"
+  endpointSelector:
+    matchLabels:
+      app: {{ name }}
+  egress:
+  - toFQDNs:
+{% for rule in egress_fqdn %}
+{% if rule.match is defined %}
+    - matchName: "{{ rule.match }}"
+{% endif %}
+{% if rule.pattern is defined %}
+    - matchPattern: "{{ rule.pattern }}"
+{% endif %}
+{% endfor %}
+    toPorts:
+    - ports:
+{% set _fqdn_ports = [] %}
+{% for rule in egress_fqdn %}
+{% for p in rule.ports | default(['443']) %}
+{% if (p | string) not in _fqdn_ports %}{% set _ = _fqdn_ports.append(p | string) %}{% endif %}
+{% endfor %}
+{% endfor %}
+{% for port in _fqdn_ports %}
+      - port: "{{ port }}"
+        protocol: TCP
+{% endfor %}

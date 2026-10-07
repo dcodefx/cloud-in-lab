@@ -1,0 +1,113 @@
+---
+# OpenBao Auto-Unseal - PKCS#11 / SoftHSM2 plugin tabanlı kurulum
+# Bu task seti sadece openbao_autounseal_enabled: true olduğunda çalışır.
+# Mevcut Ansible projesine entegre edilmeden önce değişkenler ve yollar
+# projenize göre uyarlanmalıdır.
+
+- name: Auto-unseal önkoşul değişkenlerini doğrula
+  ansible.builtin.assert:
+    that:
+      - openbao_softhsm_pin | length > 0
+      - openbao_pkcs11_plugin_sha256 | length > 0
+      - openbao_pkcs11_plugin_bin | length > 0
+    fail_msg: "Auto-unseal aktif edildi ama openbao_softhsm_pin / openbao_pkcs11_plugin_sha256 / openbao_pkcs11_plugin_bin tanımlı değil"
+  when: openbao_autounseal_enabled | bool
+  tags: [openbao, autounseal]
+
+- name: SoftHSM2 paketlerini yükle
+  ansible.builtin.package:
+    name:
+      - softhsm2
+      - opensc
+    state: present
+  when: openbao_autounseal_enabled | bool
+  tags: [openbao, autounseal]
+
+- name: SoftHSM token dizinini oluştur
+  ansible.builtin.file:
+    path: "{{ openbao_softhsm_token_dir }}"
+    state: directory
+    owner: root
+    group: "{{ openbao_softhsm_group | default('softhsm') }}"
+    mode: "0750"
+  when: openbao_autounseal_enabled | bool
+  tags: [openbao, autounseal]
+
+- name: openbao kullanıcısını softhsm grubuna ekle
+  ansible.builtin.user:
+    name: "{{ openbao_user }}"
+    groups: "{{ openbao_softhsm_group | default('softhsm') }}"
+    append: true
+  when: openbao_autounseal_enabled | bool
+  tags: [openbao, autounseal]
+
+- name: OpenBao plugin dizinini oluştur
+  ansible.builtin.file:
+    path: "{{ openbao_plugin_dir }}"
+    state: directory
+    owner: "{{ openbao_user }}"
+    group: "{{ openbao_group }}"
+    mode: "0755"
+  when: openbao_autounseal_enabled | bool
+  tags: [openbao, autounseal]
+
+- name: PKCS#11 KMS plugin binary'sini kopyala
+  ansible.builtin.copy:
+    src: "{{ openbao_pkcs11_plugin_src | default('/tmp/' + openbao_pkcs11_plugin_bin) }}"
+    dest: "{{ openbao_plugin_dir }}/{{ openbao_pkcs11_plugin_bin }}"
+    owner: "{{ openbao_user }}"
+    group: "{{ openbao_group }}"
+    mode: "0755"
+  register: plugin_copy
+  when: openbao_autounseal_enabled | bool
+  tags: [openbao, autounseal]
+
+- name: PKCS#11 KMS plugin sha256 doğrulaması
+  ansible.builtin.stat:
+    path: "{{ openbao_plugin_dir }}/{{ openbao_pkcs11_plugin_bin }}"
+    checksum_algorithm: sha256
+  register: plugin_stat
+  when: openbao_autounseal_enabled | bool and plugin_copy is changed
+
+- name: Plugin sha256 uyuşmazlığını kontrol et
+  ansible.builtin.assert:
+    that:
+      - plugin_stat.stat.checksum == openbao_pkcs11_plugin_sha256
+    fail_msg: "PKCS#11 plugin sha256 uyuşmuyor"
+  when: openbao_autounseal_enabled | bool and plugin_copy is changed
+
+- name: SoftHSM token'ının varlığını kontrol et
+  ansible.builtin.command:
+    cmd: softhsm2-util --show-slots
+  register: softhsm_slots
+  changed_when: false
+  when: openbao_autounseal_enabled | bool
+  tags: [openbao, autounseal]
+
+- name: SoftHSM token'ı başlat
+  ansible.builtin.command:
+    cmd: >
+      softhsm2-util --init-token --slot 0
+      --label "{{ openbao_softhsm_token_label }}"
+      --pin "{{ openbao_softhsm_pin }}"
+      --so-pin "{{ openbao_softhsm_so_pin | default(openbao_softhsm_pin) }}"
+  args:
+    creates: "{{ openbao_softhsm_token_dir }}/00000001"
+  when: openbao_autounseal_enabled | bool
+  no_log: true
+  tags: [openbao, autounseal]
+
+- name: AES-256 anahtarını SoftHSM'e oluştur
+  ansible.builtin.command:
+    cmd: >
+      pkcs11-tool --module "{{ openbao_softhsm_lib_path }}"
+      --login --pin "{{ openbao_softhsm_pin }}"
+      --keygen --key-type AES:32 --label "{{ openbao_softhsm_key_label }}"
+  args:
+    creates: "{{ openbao_softhsm_token_dir }}/token.label"
+  when: openbao_autounseal_enabled | bool
+  no_log: true
+  tags: [openbao, autounseal]
+
+# Not: Config ve service şablonları openbao_autounseal_enabled değişkenine göre
+# koşullu render edilmeli. Bu task seti sadece bağımlılıkları hazırlar.

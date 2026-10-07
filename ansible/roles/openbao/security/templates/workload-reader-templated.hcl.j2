@@ -1,0 +1,18 @@
+# W1 reader: B0+self-care + B1+kv-read-own
+# Scope: secret/data/<scope>/* → read, secret/metadata/<scope>/* → list,read
+# {{ '{{' }} ... {{ '}}' }} → OpenBao template literal (paketi render edildikten
+# SONRA çözülür); {{ approle_accessor }} → Ansible tarafından yazılır (yalın
+# accessor, sys/auth'ten — ek auth_approle_ öneki YOK, Adım 1 dersi).
+
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}
+path "secret/data/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}/*" {
+  capabilities = ["read"]
+}
+path "secret/metadata/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}/*" {
+  capabilities = ["list", "read"]
+}

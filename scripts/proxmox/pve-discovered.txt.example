@@ -1,0 +1,30 @@
+# Proxmox VE - Kesif Bilgileri
+# Tarih: 2026-10-04 17:32
+# Node: pve
+
+# pve_version: pve-manager/9.2.11/f6997e698c7933ea (running kernel: 7.0.14-14-pve)
+
+##### TEMEL BILGILER #####
+target_node = "pve"
+gateway = "164.102.98.70"
+bridge = "vmbr0"
+pve_ip = "164.102.98.16"
+subnet_mask = "24"
+proxmox_endpoint = "https://164.102.98.16:8006"
+dns = "164.102.98.70"
+
+##### STORAGE LISTESI #####
+# storage | type | content
+
+##### VM TEMPLATELERI #####
+# vmid | name | status
+# (Bos ise henuz VM template'i olusturulmamis)
+
+##### MEVCUT VM/LXC LISTESI #####
+# vmid | name | type | status | ip
+
+##### ALPINE CT TEMPLATE #####
+system          alpine-3.22-default_20250617_amd64.tar.xz                    amd64
+system          alpine-3.23-default_20260116_amd64.tar.xz                    amd64
+system          alpine-3.24-default_20260714_amd64.tar.xz                    amd64
+system          alpine-3.24-default_20260803_arm64.tar.xz                    arm64

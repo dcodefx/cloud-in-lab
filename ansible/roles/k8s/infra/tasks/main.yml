@@ -1,0 +1,26 @@
+---
+- name: Set flat vars from nested structure
+  ansible.builtin.set_fact:
+    cluster_name: "{{ k8s_cluster.cluster_name }}"
+    gateway_hostname: "{{ k8s_cluster.cluster_name }}-gateway"
+  changed_when: false
+
+- name: Ensure OpenBao reachable + unsealed (required)
+  ansible.builtin.include_tasks: ../../../k8s/openbao-ops/tasks/ensure_ready.yml
+
+- name: Install ClusterIssuer
+  ansible.builtin.include_tasks: cluster-issuer.yml
+
+- name: "HTTP->HTTPS redirect (tls_mode: redirect)"
+  ansible.builtin.template:
+    src: http-to-https-redirect.yaml.j2
+    dest: /tmp/http-to-https-redirect.yaml
+    mode: "0644"
+  when: tls_mode == 'redirect'
+
+- name: Apply HTTP->HTTPS redirect
+  ansible.builtin.shell: |
+    kubectl apply -f /tmp/http-to-https-redirect.yaml
+
+  changed_when: false
+  when: tls_mode == 'redirect'

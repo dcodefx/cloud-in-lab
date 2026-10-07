@@ -1,0 +1,84 @@
+---
+# Paylaşılan task: OpenBao erişilebilir + unsealed mi?
+# Tüketici roller (openbao-ops, infra) include_tasks ile çağırır.
+# Tek kaynak: outputs/openbao/openbao-config.json içindeki address/host
+
+- name: Load openbao config
+  ansible.builtin.slurp:
+    src: "{{ playbook_dir }}/../outputs/openbao/openbao-config.json"
+  register: _bao_config
+  delegate_to: localhost
+  become: false
+
+- name: Fail if openbao config not found
+  ansible.builtin.fail:
+    msg: "OpenBao config outputs/openbao/openbao-config.json not found. Run the openbao.yml playbook first."
+  when: _bao_config is failed
+
+- name: Set OpenBao host/address from config
+  ansible.builtin.set_fact:
+    openbao_host: "{{ (_bao_config.content | b64decode | from_json).host }}"
+    openbao_address: "{{ (_bao_config.content | b64decode | from_json).address }}"
+  changed_when: false
+
+- name: Check OpenBao health
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/sys/health"
+    method: GET
+    validate_certs: false
+    status_code: [200, 429, 472, 473, 503]
+  register: _health
+  ignore_errors: true
+
+- name: Fail if OpenBao truly unreachable
+  ansible.builtin.fail:
+    msg: "OpenBao ({{ openbao_address }}) unreachable. Install and start the LXC with openbao.yml first."
+  when: _health is failed
+
+- name: Unseal OpenBao if sealed
+  when: _health.status == 503
+  block:
+    - name: Read credentials from controller
+      ansible.builtin.slurp:
+        src: "{{ playbook_dir }}/../outputs/openbao/openbao-credentials.yml"
+      register: _bao_creds
+      delegate_to: localhost
+      become: false
+      no_log: true
+      ignore_errors: true
+
+    - name: Fail if credentials not found
+      ansible.builtin.fail:
+        msg: >
+          OpenBao is sealed but
+          outputs/openbao/openbao-credentials.yml was not found on the controller.
+          Run the openbao.yml playbook first.
+      when: _bao_creds is failed
+
+    - name: Parse unseal keys
+      ansible.builtin.set_fact:
+        _unseal_keys: "{{ (_bao_creds.content | b64decode | from_yaml).openbao_unseal_keys }}"
+      no_log: true
+
+    - name: Unseal OpenBao
+      ansible.builtin.uri:
+        url: "{{ openbao_address }}/v1/sys/unseal"
+        method: PUT
+        body_format: json
+        body:
+          key: "{{ item }}"
+        validate_certs: false
+        status_code: 200
+      loop: "{{ _unseal_keys[:openbao_unseal_threshold | default(3)] }}"
+      no_log: true
+
+    - name: Wait until unsealed (health no longer 503)
+      ansible.builtin.uri:
+        url: "{{ openbao_address }}/v1/sys/health"
+        method: GET
+        validate_certs: false
+        status_code: [200, 429, 472, 473, 503]
+      register: _unseal_verify
+      until: _unseal_verify.status != 503
+      retries: 30
+      delay: 2

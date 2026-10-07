@@ -1,0 +1,6 @@
+---
+- name: Restart Laws
+  ansible.builtin.systemd:
+    name: laws
+    state: restarted
+    daemon_reload: true

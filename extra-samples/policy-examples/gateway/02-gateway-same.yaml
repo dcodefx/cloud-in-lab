@@ -1,0 +1,35 @@
+---
+# ============================================
+# Gateway: main-gateway (allowedRoutes: Same)
+# Tür: gateway.networking.k8s.io/v1 / Gateway
+# Katman: Routing (Gateway API)
+# ============================================
+# Ne işe yarar:
+#   Sadece Gateway ile AYNI namespace'teki
+#   HTTPRoute'ların bağlanmasına izin verir.
+#
+# allowedRoutes.namespaces.from: Same
+#   - Sadece infra-system namespace'indeki HTTPRoute'lar
+#     bu Gateway'i kullanabilir.
+#   - Diğer namespace'lerdeki HTTPRoute'lar bağlanamaz.
+#
+# Kullanım:
+#   - Gateway ve uygulama aynı namespace'teyse
+#   - Sıkı kontrollü ortamlar
+#   - Tek bir ekibin yönettiği altyapı
+# ============================================
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: main-gateway
+  namespace: infra-system
+spec:
+  gatewayClassName: cilium
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+    allowedRoutes:
+      namespaces:
+        from: Same

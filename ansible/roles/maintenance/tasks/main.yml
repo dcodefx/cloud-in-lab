@@ -1,0 +1,24 @@
+---
+# roles/maintenance/tasks — install restic, sync tree, write env/pw, systemd units,
+# node_exporter (non-K8s) + watchdog + restic check timers.
+# Gate single-check: the playbook role is entered via maintenance.enable, the
+# includes below look at backup.enabled; no enable repetition in the sub-tasks.
+
+# ── 0) Status info ───────────────────────────────────────────────────────
+- name: "Maintenance: {{ inventory_hostname }} local jobs"
+  ansible.builtin.debug:
+    msg: >-
+      {{ m_jobs_local | map(attribute='key') | join(', ') | default('(none)', true) }}
+
+# Sub-tasks: two pipelines — backup and restore. Each looks ONLY at its own
+# key (single-check principle):
+#   the playbook role is entered via maintenance.enable (the main switch),
+#   the backup pipeline via backup.enabled, the restore pipeline via restore.enabled.
+# No enable repetition in the sub-includes/tasks.
+- name: Include backup pipeline
+  ansible.builtin.include_tasks: backup.yml
+  when: maintenance.backup.enabled | default(true)
+
+- name: Include restore pipeline
+  ansible.builtin.include_tasks: restore.yml
+  when: maintenance.restore.enabled | default(false)

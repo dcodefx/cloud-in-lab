@@ -1,0 +1,22 @@
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: global-allow-gateway-world-ingress
+spec:
+  description: "Dis dunyadan ve cluster icinden Gateway Envoy (reserved:ingress) listener'larina 80/443 erisimi"
+  endpointSelector:
+    matchExpressions:
+      - key: reserved:ingress
+        operator: Exists
+  ingress:
+    - fromEntities:
+        - world
+        - remote-node
+        - host
+        - cluster
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP

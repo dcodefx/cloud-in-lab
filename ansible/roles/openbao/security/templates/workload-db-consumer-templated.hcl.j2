@@ -1,0 +1,10 @@
+# W8 db-consumer: B0+self-care + B7-dynamic-db (KV yok). 1h/24h.
+# DB credential'ları role üzerinden scope-bazlı okunur (database/creds/<scope>-db).
+# Template scope: identity.entity.aliases.<accessor>.metadata.scope (secret-id JSON-string).
+
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "database/creds/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}-*" {
+  capabilities = ["read"]
+}

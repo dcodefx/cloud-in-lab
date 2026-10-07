@@ -1,0 +1,65 @@
+---
+- name: Install cert-manager
+  ansible.builtin.shell: |
+    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v{{ cert_manager_version }}/cert-manager.yaml
+
+  register: _cm
+  changed_when: _cm.rc == 0
+
+# Tolerasyon patch'leri, webhook'in Ready beklenmesinden ONCE uygulanmali.
+# Aksi halde (ozellikle tainted control-plane / tek-node ortamlarda) pod
+# schedule olamaz ve alttaki wait task'i timeout verir.
+# Not: kubernetes.core.k8s yerine kubectl patch kullanildi (hedef node'da
+# 'kubernetes' Python kutuphanesi gerektirmemesi icin).
+- name: Patch cert-manager-webhook deployment (toleration + label)
+  ansible.builtin.shell: |
+    kubectl -n cert-manager patch deployment cert-manager-webhook --type='merge' \
+      -p='{"spec":{"template":{"metadata":{"labels":{"admission-webhook":"true"}},"spec":{"tolerations":[{"key":"node-role.kubernetes.io/control-plane","operator":"Exists","effect":"NoSchedule"}]}}}}'
+  register: _cm_webhook
+  changed_when: _cm_webhook.rc == 0
+  delegate_to: "{{ groups['k8s_master'][0] }}"
+  run_once: true
+
+- name: Patch cert-manager deployment (toleration)
+  ansible.builtin.shell: |
+    kubectl -n cert-manager patch deployment cert-manager --type='merge' \
+      -p='{"spec":{"template":{"spec":{"tolerations":[{"key":"node-role.kubernetes.io/control-plane","operator":"Exists","effect":"NoSchedule"}]}}}}'
+  register: _cm_ctrl
+  changed_when: _cm_ctrl.rc == 0
+  delegate_to: "{{ groups['k8s_master'][0] }}"
+  run_once: true
+
+- name: Patch cert-manager-cainjector deployment (toleration)
+  ansible.builtin.shell: |
+    kubectl -n cert-manager patch deployment cert-manager-cainjector --type='merge' \
+      -p='{"spec":{"template":{"spec":{"tolerations":[{"key":"node-role.kubernetes.io/control-plane","operator":"Exists","effect":"NoSchedule"}]}}}}'
+  register: _cm_cainj
+  changed_when: _cm_cainj.rc == 0
+  delegate_to: "{{ groups['k8s_master'][0] }}"
+  run_once: true
+
+- name: Wait for cert-manager webhook to be ready (diagnostics on failure)
+  block:
+    - name: Wait for cert-manager-webhook deployment Available
+      ansible.builtin.shell: |
+        kubectl wait --for=condition=Available deployment/cert-manager-webhook \
+          -n cert-manager --timeout=600s
+      changed_when: false
+  rescue:
+    - name: Dump cert-manager diagnostics
+      ansible.builtin.shell: |
+        echo "=== PODS ==="; kubectl get pods -n cert-manager -o wide
+        echo "=== DESCRIBE WEBHOOK ==="; kubectl describe deployment cert-manager-webhook -n cert-manager
+        echo "=== WEBHOOK LOGS ==="; kubectl logs -n cert-manager deploy/cert-manager-webhook --tail=60
+        echo "=== CAINJECTOR LOGS ==="; kubectl logs -n cert-manager deploy/cert-manager-cainjector --tail=60
+        echo "=== STARTUPAPICHECK LOGS ==="; kubectl logs -n cert-manager job/cert-manager-startupapicheck --tail=60 2>/dev/null || true
+      changed_when: false
+      failed_when: false
+    - name: Fail with clear guidance
+      ansible.builtin.fail:
+        msg: |
+          cert-manager webhook hazir olmadi (timeout). Yukaridaki diagnostik ciktisini inceleyin:
+          - Podlar ImagePullBackOff / CrashLoopBackOff mu? -> worker'larda quay.io image pull / egress sorunu
+          - Webhook TLS / serving-cert hatasi mi? -> cainjector loglari (caBundle enjeksiyonu)
+          - 600s yine yetmedi mi? -> slow start; timeout'i artirin
+          - Tainted tek-node ortamda pod Pending mi? -> tolerasyon patch'leri yukarida uygulandi

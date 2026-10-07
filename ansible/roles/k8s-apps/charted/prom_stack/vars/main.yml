@@ -1,0 +1,34 @@
+---
+# Sabitlerin tek kaynağı — chart/service burada, group_vars’ta tekrar yazılmaz.
+# templated/<app>/vars/main.yml karşılığı; chart-deploy her chart için bu dosyayı yükler.
+# group_vars (charted.<key>) recursive combine ile üzerine yazar.
+chart_defaults:
+  enable: false
+  release_name: kube-prom-stack
+  chart: prometheus-community/kube-prometheus-stack
+  chart_version: "88.6.1"
+  namespace: monitoring
+  repo_name: prometheus-community
+  repo_url: https://prometheus-community.github.io/helm-charts
+
+  prometheus:
+    subdomain: prometheus
+    port: 9090
+
+  grafana:
+    enabled: true
+    subdomain: grafana
+    port: 80
+
+  alertmanager:
+    enabled: true
+    subdomain: alertmanager
+    port: 9093
+
+  # Backup metrics: external node_exporter (pve/openbao) + K8s master
+  # textfile mount (values.yaml.j2). Backup alert kurallari maintenance
+  # rolunde (roles/maintenance → monitoring.yml) — helm akisina bagli degil.
+  # When disabled, values.yaml.j2 produces nothing extra.
+  backup:
+    metrics:
+      enabled: false

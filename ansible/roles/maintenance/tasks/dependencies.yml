@@ -1,0 +1,119 @@
+---
+# ── 1b) Job'a bagli harici binary'ler (simdilik: etcdctl) ─────────────────
+# Neden ayri dosya: restic kendi task'inda kuruluyor (restic.yml) ama
+# backup-etcd.sh'in ihtiyac duydugu etcdctl'in HICBIR kurulum yolu yoktu.
+# Sonuc: etcd-daily/weekly/monthly her kosuda
+#   "[HATA] etcdctl bulunamadi. K8s Master uzerinde calistirin."
+# ile sessizce olusuyordu. Harici binary kurulumu rolun sorumlulugudur.
+#
+# KURULUM YOLU: {{ m_home }}/bin — sabit /home/<user> DEGIL.
+#   backup.service.j2: Environment=HOME={{ m_home }}
+#   backup-etcd.sh:72  command -v etcdctl || ${HOME}/bin/etcdctl
+# Unit'in HOME ile aradigi yol ile kurulum yolu AYNILANMALIDIR, aksi halde
+# script binary'yi yine bulamaz.
+#
+# YONTEM: resmi GitHub release tarball'i. Bilerek secildi:
+#   * calisan etcd konteynerine (crictl/ctr) DOKUNULMAZ — kubelet'in
+#     containerd soketine müdahale etmek gerekmez ve risklidir
+#   * idempotent + tek dosya + checksum dogrulanabilir
+# Surum calisan etcd ile ayni OLMALI: bir snapshot yalniz kaydedildigi
+# surumun etcdctl'si ile geri yuklenebilir (defaults: etcdctl_version).
+- name: Install etcdctl (external job dependency binary)
+  when: m_etcdctl_jobs_local | length > 0
+  vars:
+    m_etcdctl_arch: "{{ restic_arch_map[ansible_architecture] | default('amd64') }}"
+    m_etcdctl_tarball: "etcd-v{{ etcdctl_version }}-linux-{{ restic_arch_map[ansible_architecture] | default('amd64') }}.tar.gz"
+  block:
+    - name: "Create download cache dir"
+      ansible.builtin.file:
+        path: "{{ etcdctl_cache }}"
+        state: directory
+        mode: "0755"
+
+    - name: "Create {{ m_home }}/bin (etcdctl target)"
+      ansible.builtin.file:
+        path: "{{ etcdctl_bin | dirname }}"
+        state: directory
+        mode: "0755"
+
+    - name: "Download etcd {{ etcdctl_version }} release tarball (cache)"
+      ansible.builtin.get_url:
+        url: "{{ etcdctl_url }}"
+        dest: "{{ etcdctl_cache }}/{{ m_etcdctl_tarball }}"
+        mode: "0644"
+        force: false
+
+    - name: "Download etcd {{ etcdctl_version }} SHA256SUMS"
+      ansible.builtin.get_url:
+        url: "{{ etcdctl_sums_url }}"
+        dest: "{{ etcdctl_cache }}/etcd-{{ etcdctl_version }}-SHA256SUMS"
+        mode: "0644"
+        force: false
+
+    # get_url force:false yarim kalmis dosyayi oldugu gibi birakirdi ve
+    # sonraki kosularda kalici olarak takilirdi. Tutarsizsa dosyayi SIL,
+    # bir sonraki kosuda yeniden indirilir (kendini onarir).
+    - name: "Verify release tarball checksum (upstream SHA256SUMS)"
+      block:
+        - name: "Check sha256 against upstream SHA256SUMS"
+          ansible.builtin.shell:
+            cmd: "set -o pipefail; grep ' {{ m_etcdctl_tarball }}$' {{ etcdctl_cache }}/etcd-{{ etcdctl_version }}-SHA256SUMS | sha256sum -c -"
+          args:
+            chdir: "{{ etcdctl_cache }}"
+          changed_when: false
+          register: m_etcdctl_sha
+
+        - name: "Delete corrupted tarball (next run re-downloads)"
+          ansible.builtin.file:
+            path: "{{ etcdctl_cache }}/{{ m_etcdctl_tarball }}"
+            state: absent
+          when: m_etcdctl_sha.rc != 0
+
+      rescue:
+        - name: "Fail: release tarball checksum verification failed"
+          ansible.builtin.fail:
+            msg: >-
+              {{ etcdctl_url }} checksum does not match upstream SHA256SUMS.
+              Corrupted tarball was deleted; it will be re-downloaded on the next run.
+              This may be a mirror/data-integrity issue — investigate.
+
+    # strip-components=1 ile etcdctl dogrudan {{ m_home }}/bin altina
+    # duser (etcd/etcdutl/benchmark kullanilmiyor, indirilmez).
+    - name: "Install etcdctl -> {{ etcdctl_bin }}"
+      ansible.builtin.unarchive:
+        src: "{{ etcdctl_cache }}/{{ m_etcdctl_tarball }}"
+        dest: "{{ etcdctl_bin | dirname }}"
+        remote_src: true
+        extra_opts:
+          - --strip-components=1
+          - "etcd-v{{ etcdctl_version }}-linux-{{ m_etcdctl_arch }}/etcdctl"
+        creates: "{{ etcdctl_bin }}"
+
+    - name: "Read installed etcdctl version"
+      ansible.builtin.command: "{{ etcdctl_bin }} version"
+      register: m_etcdctl_ver
+      changed_when: false
+      # failed_when: false — binary yoksa rc != 0 play'i dusurur; hata
+      # durumu hemen asagidaki assert'te yakalanir (rc == 0 + surum kontrolu).
+      # Bu olmadan ilk kurulumda assert'e ulasmadan play cakisirdi.
+      failed_when: false
+
+    - name: "Assert etcdctl runs and version {{ etcdctl_version }}"
+      ansible.builtin.assert:
+        that:
+          - m_etcdctl_ver.rc == 0
+          - "'etcdctl version: ' + etcdctl_version in (m_etcdctl_ver.stdout | default(''))"
+        fail_msg: >-
+          etcdctl cannot be executed or the version does not match.
+          Expected version: {{ etcdctl_version }}
+          Actual output: {{ m_etcdctl_ver.stdout | default('<empty>') | trim }}
+          The version MUST be the same major.minor as the running etcd —
+          snapshots cannot be restored with a different version.
+          Update etcdctl_version in defaults/main.yml, then run again.
+
+    - name: "Report etcdctl ready"
+      ansible.builtin.debug:
+        msg: >-
+          etcdctl ready: {{ etcdctl_bin }}
+          ({{ m_etcdctl_ver.stdout | default('') | trim }})
+          — for {{ m_etcdctl_jobs_local | map(attribute='key') | join(', ') }} job(s).

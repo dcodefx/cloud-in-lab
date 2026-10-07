@@ -1,0 +1,68 @@
+---
+# ── 2) maintenance/ tree — SELECTIVE sync (only what each host needs) ────
+# rsync include-list (m_tree_rsync_*): own job script(s) + _common.sh; DR hosts
+# additionally restore/ + healthcheck. Never ships: docs, *.md, deploy,
+# prune-s3.sh, backup-quick.sh (+ openbao: restore, healthcheck).
+# The include-list is the only authority (exclude=*): nothing else is copied.
+# There is deliberately NO separate leftover-cleanup task — no file outside the
+# rsync include-list can reach the target; stale files there are the operator's.
+# (backup-key.sh was removed with the key job: encryption.key never reached the
+#  host, so the job failed on every run. See defaults/main.yml §2 note.)
+- name: Install rsync (for synchronize)
+  when: m_jobs_local | length > 0 and ansible_connection != 'local'
+  ansible.builtin.package:
+    name: rsync
+    state: present
+
+- name: "Create repo root: {{ m_root }}"
+  when: m_jobs_local | length > 0 and ansible_connection != 'local'
+  ansible.builtin.file:
+    path: "{{ m_root }}"
+    state: directory
+    mode: "0755"
+
+- name: Sync maintenance/ tree to target (selective include-list)
+  when: m_jobs_local | length > 0 and ansible_connection != 'local'
+  ansible.posix.synchronize:
+    src: "{{ m_maint_src }}/"
+    dest: "{{ m_root }}/maintenance/"
+    # pve/openbao connect as root (no sudo) → plain rsync; master/ubuntu
+    # write as root via sudo (today's working behaviour preserved).
+    # Requirement: sudoers on ubuntu hosts must allow NOPASSWD for rsync,
+    # e.g.: ubuntu ALL=(root) NOPASSWD: /usr/bin/rsync
+    # (ansible become: true does NOT apply to synchronize — it manages its
+    #  own ssh channel; rsync_path is the only way to elevate on the remote)
+    rsync_path: "{{ 'rsync' if ansible_user == 'root' else 'sudo -u root rsync' }}"
+    # no --chmod: -a preserves source perms (repo .sh files are 644 —
+    # exec bit is set by the find/chmod task below, README convention)
+    rsync_opts: "{{ m_tree_rsync_opts }}"
+
+- name: "Find scripts: {{ m_root }}/maintenance"
+  when: m_jobs_local | length > 0 and ansible_connection != 'local'
+  ansible.builtin.find:
+    paths: "{{ m_root }}/maintenance"
+    patterns: "*.sh"
+    recurse: true
+  register: m_scripts
+
+- name: "Make scripts executable (+x — README 'permission note' convention)"
+  when: m_jobs_local | length > 0 and ansible_connection != 'local'
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    mode: "0755"
+  loop: "{{ m_scripts.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+# ── 3) Directories ──────────────────────────────────────────────────────
+- name: "Create directories: {{ m_conf }} + metrics"
+  when: ansible_connection != 'local' and m_jobs_local | length > 0
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ m_conf }}"
+    - "{{ m_conf }}/backup"
+    - "{{ m_conf }}/restic"
+    - "{{ m_metrics }}"

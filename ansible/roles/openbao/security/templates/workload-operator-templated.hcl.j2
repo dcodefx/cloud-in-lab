@@ -1,0 +1,31 @@
+# W3 operator: B0+self-care + B1+kv-read + B2+kv-write + B4+transit-use
+# Scope: secret/data/<scope>/* full CRUD, transit encrypt/decrypt/rewrap/datakey + keys read
+# Transit key konvansiyonu: <scope>-<key> (örn. scope=myapp ise myapp-app-key).
+
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}
+path "secret/data/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}/*" {
+  capabilities = ["create", "read", "update", "patch"]
+}
+path "secret/metadata/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}/*" {
+  capabilities = ["list", "read"]
+}
+path "transit/encrypt/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}-*" {
+  capabilities = ["update"]
+}
+path "transit/decrypt/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}-*" {
+  capabilities = ["update"]
+}
+path "transit/rewrap/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}-*" {
+  capabilities = ["update"]
+}
+path "transit/datakey/plaintext/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}-*" {
+  capabilities = ["update"]
+}
+path "transit/keys/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}-*" {
+  capabilities = ["read"]
+}

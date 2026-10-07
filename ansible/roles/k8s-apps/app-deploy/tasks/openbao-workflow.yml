@@ -1,0 +1,126 @@
+---
+# Mount config
+- name: Load openbao mount config
+  ansible.builtin.slurp:
+    src: "{{ playbook_dir }}/../outputs/openbao/openbao-mount.json"
+  register: _bao_mount
+  delegate_to: localhost
+  become: false
+
+- name: Fail if openbao mount config not found
+  ansible.builtin.fail:
+    msg: "outputs/openbao/openbao-mount.json not found — run 'playbooks/openbao.yml' first."
+  when: _bao_mount is failed
+
+- name: Set openbao mount vars
+  ansible.builtin.set_fact:
+    openbao_approle_mount: "{{ (_bao_mount.content | b64decode | from_json).approle_mount }}"
+    openbao_kv_mount: "{{ (_bao_mount.content | b64decode | from_json).kv_mount }}"
+  no_log: true
+
+# NOTE: templated/<name>/ klasor okuma (vars + files) artik deploy-app.yml'de,
+# her app icin kosuyor (openbao sarti yok). Bu dosya yalniz credential akisi icindir.
+
+# app.openbao.enable grubu
+- name: "Compute OpenBao scope"
+  ansible.builtin.set_fact:
+    ob_scope: "{{ app.name }}"
+  when: app.openbao is defined and app.openbao.enable | default(false) and app.openbao.profile | default('none') != 'none'
+
+- name: Read ops-admin credentials from controller
+  ansible.builtin.slurp:
+    src: "{{ playbook_dir }}/../outputs/openbao/ops-admin.json"
+  register: _ops_admin_creds
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when:
+    - app.openbao is defined
+    - app.openbao.enable | default(false)
+    - app.openbao.profile | default('none') != 'none'
+
+- name: Login with ops-admin role_id + secret_id
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/auth/{{ openbao_approle_mount }}/login"
+    method: POST
+    body:
+      role_id: "{{ (_ops_admin_creds.content | b64decode | from_json).role_id }}"
+      secret_id: "{{ (_ops_admin_creds.content | b64decode | from_json).secret_id }}"
+    body_format: json
+    validate_certs: false
+    status_code: 200
+  register: _ops_login
+  no_log: true
+  when: _ops_admin_creds is not skipped
+
+- name: Set bao_token to ops-admin
+  ansible.builtin.set_fact:
+    bao_token: "{{ _ops_login.json.auth.client_token }}"
+  no_log: true
+  when: _ops_login is not skipped
+
+- name: Scope check (already exists in KV?)
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/{{ openbao_kv_mount }}/data/{{ ob_scope }}-approle"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    validate_certs: false
+    status_code: [200, 404]
+  register: _scope_check
+  when:
+    - app.openbao is defined
+    - app.openbao.enable | default(false)
+    - openbao_mount is defined
+
+- name: Set scope exists flag
+  ansible.builtin.set_fact:
+    ob_scope_exists: true
+  when:
+    - _scope_check is not skipped
+    - _scope_check.status == 200
+
+- name: Set scope not exists flag
+  ansible.builtin.set_fact:
+    ob_scope_exists: false
+  when:
+    - _scope_check is not skipped
+    - _scope_check.status == 404
+
+- name: "Warning: scope already in use, skipping OpenBao steps"
+  ansible.builtin.debug:
+    msg: "WARNING: scope '{{ ob_scope }}' already exists in OpenBao KV (secret/data/{{ ob_scope }}-approle). OpenBao steps are skipped; no overwrite."
+  when:
+    - _scope_check is not skipped
+    - _scope_check.status == 200
+
+- name: Produce workload credentials
+  ansible.builtin.include_tasks: produce-workload-creds.yml
+  vars:
+    _profile: "{{ app.openbao.profile }}"
+    _scope: "{{ ob_scope }}"
+  when:
+    - app.openbao is defined
+    - app.openbao.enable | default(false)
+    - app.openbao.profile | default('none') != 'none'
+    - ob_scope_exists | default(false) | bool == false
+
+- name: Produce transit key (if needed)
+  ansible.builtin.include_tasks: produce-transit-key.yml
+  vars:
+    _scope: "{{ ob_scope }}"
+  when:
+    - app.openbao is defined
+    - app.openbao.enable | default(false)
+    - openbao_mount is defined
+
+- name: Read workload credentials + build SPC
+  ansible.builtin.include_tasks: read-workload-creds.yml
+  vars:
+    _scope: "{{ ob_scope }}"
+  when:
+    - app.openbao is defined
+    - app.openbao.enable | default(false)
+    - app.openbao.profile | default('none') != 'none'
+
+

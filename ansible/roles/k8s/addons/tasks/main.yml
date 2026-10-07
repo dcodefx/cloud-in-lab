@@ -1,0 +1,68 @@
+---
+- name: Install cert-manager
+  ansible.builtin.include_tasks: cert-manager.yml
+
+- name: Render metrics-server Helm values
+  ansible.builtin.template:
+    src: metrics-server-values.yaml.j2
+    dest: /tmp/metrics-server-values.yaml
+    mode: "0644"
+
+- name: Add metrics-server Helm repo
+  ansible.builtin.command:
+    cmd: helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
+  register: _ms_repo
+  changed_when: '"already exists" not in _ms_repo.stdout'
+  failed_when: false
+
+- name: Update Helm repos
+  ansible.builtin.command:
+    cmd: helm repo update
+  when: _ms_repo.changed | default(false)
+
+- name: Clean pending Helm releases and stuck upgrade jobs
+  ansible.builtin.shell: |
+    kubectl -n kube-system delete secret \
+      -l "owner=helm,name=metrics-server,status=pending-install" --ignore-not-found
+    kubectl -n kube-system delete job \
+      -l "app.kubernetes.io/instance=metrics-server" --ignore-not-found 2>/dev/null
+
+  changed_when: false
+  failed_when: false
+
+- name: Install metrics-server via Helm chart
+  block:
+    - name: Helm upgrade metrics-server
+      ansible.builtin.command:
+        argv: >-
+          {{ ['helm', 'upgrade', '--install', 'metrics-server',
+              'metrics-server/metrics-server',
+              '--namespace', 'kube-system',
+              '--values', '/tmp/metrics-server-values.yaml',
+              '--version', metrics_server_chart_version] }}
+      register: _ms
+      changed_when: _ms.rc == 0
+  rescue:
+    - name: Helm lock cleanup — delete stuck release
+      ansible.builtin.shell: |
+        kubectl -n kube-system delete secret -l "owner=helm,name=metrics-server,status=pending-install" --ignore-not-found
+
+      when: _ms.stderr is search("another operation")
+      changed_when: false
+
+    - name: Helm lock cleanup — log and retry
+      ansible.builtin.debug:
+        msg: "Helm release lock 'metrics-server' cleared, retrying."
+      when: _ms.stderr is search("another operation")
+
+    - name: Retry Helm upgrade metrics-server
+      ansible.builtin.command:
+        argv: >-
+          {{ ['helm', 'upgrade', '--install', 'metrics-server',
+              'metrics-server/metrics-server',
+              '--namespace', 'kube-system',
+              '--values', '/tmp/metrics-server-values.yaml',
+              '--version', metrics_server_chart_version] }}
+      register: _ms_retry
+      changed_when: _ms_retry.rc == 0
+      when: _ms.stderr is search("another operation")

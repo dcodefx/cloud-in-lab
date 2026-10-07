@@ -1,0 +1,91 @@
+---
+- import_playbook: pre/connect.yml
+- import_playbook: pre/env-check.yml
+- import_playbook: pre/openbao-env-check.yml
+
+- name: K8s Common - All nodes
+  hosts: k8s_cluster
+  become: true
+  roles:
+    - role: ../roles/k8s/common
+      tags: ['common']
+      when: k8s_cluster.enable | default(false) | bool
+
+- name: K8s Master - Control plane
+  hosts: k8s_master
+  become: true
+  roles:
+    - role: ../roles/k8s/master
+      tags: ['master']
+      when: k8s_cluster.enable | default(false) | bool
+
+- name: K8s Worker - Worker node join
+  hosts: k8s_worker
+  become: true
+  roles:
+    - role: ../roles/k8s/worker
+      tags: ['worker']
+      when: k8s_cluster.enable | default(false) | bool
+
+- name: K8s Core - CoreDNS verification
+  hosts: k8s_master[0]
+  become: false
+  environment: "{{ kubeconfig_env }}"
+  roles:
+    - role: ../roles/k8s/core
+      tags: ['core']
+      when: k8s_cluster.enable | default(false) | bool
+
+- name: K8s CNI CRs - LoadBalancer IPPool and L2 announcements
+  hosts: k8s_master[0]
+  become: false
+  environment: "{{ kubeconfig_env }}"
+  roles:
+    - role: ../roles/k8s/cni_crs
+      tags: ['cni_crs']
+      when: k8s_cluster.enable | default(false) | bool
+
+- name: K8s Addons - Cluster components
+  hosts: k8s_master[0]
+  become: false
+  environment: "{{ kubeconfig_env }}"
+  roles:
+    - role: ../roles/k8s/addons
+      tags: ['addons']
+      when: k8s_cluster.enable | default(false) | bool
+
+- name: K8s CSI - Secrets Store CSI Driver + OpenBao provider
+  hosts: k8s_master[0]
+  become: false
+  environment: "{{ kubeconfig_env }}"
+  roles:
+    - role: ../roles/k8s/csi
+      tags: ['csi']
+      when: k8s_cluster.enable | default(false) | bool
+
+- name: OpenBao Integration - Kubernetes auth, CSI/cert-manager AppRole secrets
+  hosts: k8s_master[0]
+  become: false
+  environment: "{{ kubeconfig_env }}"
+  roles:
+    - role: ../roles/k8s/openbao-ops
+      tags: ['openbao-ops']
+      when: k8s_cluster.enable | default(false) | bool
+
+- name: K8s Infra - Platform services
+  hosts: k8s_master[0]
+  become: false
+  environment: "{{ kubeconfig_env }}"
+  roles:
+    - role: ../roles/k8s/infra
+      tags: ['infra']
+      when: k8s_cluster.enable | default(false) | bool
+
+- name: K8s Security - Security layer
+  hosts: k8s_master[0]
+  become: false
+  environment: "{{ kubeconfig_env }}"
+  roles:
+    - role: ../roles/k8s/security
+      tags: ['security']
+      when: k8s_cluster.enable | default(false) | bool

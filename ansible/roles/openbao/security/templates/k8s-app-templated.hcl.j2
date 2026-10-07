@@ -1,0 +1,18 @@
+# k8s-app policy — Kubernetes auth identity ile scope-bazlı izolasyon
+# Her pod kendi SA'sıyla login olur; OpenBao otomatik olarak
+# metadata.service_account_name yazar; policy buna göre path kısıtlaması yapar.
+# {{ '{{' }} ... {{ '}}' }} → OpenBao template literal (paketi render edildikten SONRA çözülür);
+# {{ k8s_auth_accessor }} → Ansible tarafından yazılır (sys/auth'ten okunan accessor ID).
+
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}
+path "secret/data/{{ '{{' }}identity.entity.aliases.{{ k8s_auth_accessor }}.metadata.service_account_name{{ '}}' }}-approle" {
+  capabilities = ["read"]
+}
+path "database/creds/{{ '{{' }}identity.entity.aliases.{{ k8s_auth_accessor }}.metadata.service_account_name{{ '}}' }}-*" {
+  capabilities = ["read"]
+}

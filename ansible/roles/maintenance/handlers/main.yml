@@ -1,0 +1,16 @@
+---
+# roles/maintenance/handlers — systemd reload + node_exporter restart
+# (Activation tasks carry daemon_reload: true; these handlers are the fallback
+# mechanism for reload/restart on template changes.)
+
+- name: systemd reload
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: systemd reload
+
+- name: node_exporter restart
+  ansible.builtin.systemd:
+    name: prometheus-node-exporter
+    state: restarted
+    daemon_reload: true
+  listen: node_exporter restart

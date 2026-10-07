@@ -1,0 +1,62 @@
+---
+# Kubernetes version
+k8s_version: "1.36.2"
+
+# cri-tools version (bağımsız; K8s patch'iyle birebir aynı değildir)
+# Not: şu an yalnizca linux-amd64 destekleniyor. Farklı mimari icin
+# ansible_facts['architecture']'a gore URL + checksum ayri haritalanmali.
+crictl_version: "1.36.0"
+crictl_checksum: "sha256:83855e114566a8a8c44c548d515670f51de3a5e1da8b2effb59870e2f10c25a3"
+
+# Packages by OS family
+packages_common_debian:
+  - curl
+  - wget
+  - vim
+  - htop
+  - net-tools
+  - apt-transport-https
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - python3-pip
+  - unzip
+  - git
+  - jq
+  - yq
+
+packages_common_redhat:
+  - curl
+  - wget
+  - vim
+  - htop
+  - net-tools
+  - ca-certificates
+  - gnupg2
+  - python3-pip
+  - unzip
+  - git
+  - jq
+  - yq
+
+kernel_modules:
+  - overlay
+  - br_netfilter
+
+sysctl_settings:
+  - key: net.ipv4.ip_forward
+    value: "1"
+  - key: net.bridge.bridge-nf-call-iptables
+    value: "1"
+  - key: net.bridge.bridge-nf-call-ip6tables
+    value: "1"
+  - key: fs.inotify.max_user_watches
+    value: "524288"
+  - key: fs.inotify.max_user_instances
+    value: "8192"
+  - key: kernel.panic
+    value: "10"
+  - key: kernel.panic_on_oops
+    value: "1"
+  - key: vm.overcommit_memory
+    value: "1"

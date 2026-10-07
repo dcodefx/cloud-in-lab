@@ -1,0 +1,10 @@
+{% macro standard_labels(name, extra={}) -%}
+app: {{ name }}
+{% for k, v in extra.items() %}
+{{ k }}: {{ v }}
+{% endfor %}
+{%- endmacro %}
+
+{% macro app_name(name) -%}
+{{ name | lower | regex_replace('[^a-z0-9-]', '-') }}
+{%- endmacro %}

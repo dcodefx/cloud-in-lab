@@ -1,0 +1,55 @@
+---
+openbao_home: /var/lib/bao
+# openbao_address outputs/openbao/openbao-config.json içinden ensure_ready.yml ile setlenir
+
+# AppRole mount (CSI + cert-manager AppRole'leri bootstrap'ta root ile oluşturulur;
+# operasyonel secret_id üretimi burada ops-admin token ile yapılır).
+openbao_approle_mount: approle
+
+# ============================================
+# Platform credential'ları (SABİT) — her zaman üretilir.
+# İsteğe bağlı ekler openbao.credential_produce_list (all.yml) ile birleşir.
+# Yalnızca openbao_platform_roles'da tanımlı roller yazılmalı (role_id GET 404 → fail).
+openbao_platform_credentials:
+  - ops-admin
+  - pki-manager
+  - monitor
+
+# Transit engine (envelope demo; provider auth'u bu rolle yapılmaz, bkz. plan Faz 1.5)
+openbao_transit_mount: transit
+
+# Kubernetes auth (CSI provider SA-JWT; plan Faz 1.5.4 Varyant A)
+openbao_k8s_auth_mount: kubernetes
+openbao_k8s_auth_role: k8s-csi-provider
+openbao_k8s_provider_sa: openbao-csi-csi-provider
+openbao_k8s_provider_ns: kube-system
+openbao_k8s_reviewer_conf: "{{ playbook_dir | dirname }}/outputs/k8s/openbao-auth-reviewer.conf"
+
+# Database engine
+openbao_dynamic_engine_mount: database
+
+# Unseal
+openbao_unseal_threshold: 3
+
+# KV engine
+openbao_kv_mount: secret
+
+# Static secrets to store
+openbao_static_secrets:
+  - path: "{{ cluster_name | default('homelab') }}/k8s-admin"
+    data:
+      kubeconfig: ""
+      admin_token: ""
+  - path: "{{ cluster_name | default('homelab') }}/backup"
+    data:
+      garage_access_key: ""
+      garage_secret_key: ""
+
+# PKI engine
+openbao_pki_mount: pki
+openbao_pki_int_mount: pki-int
+openbao_pki_domain: "tofu.lan"
+openbao_pki_role: "tofu-lan"
+openbao_pki_root_ca_ttl: "87600h"
+openbao_pki_int_ca_ttl: "43800h"
+openbao_pki_cert_ttl: "2160h"

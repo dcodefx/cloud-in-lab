@@ -1,0 +1,6 @@
+---
+# Restore pipeline — DUMMY (restore.enabled=false).
+# The restore/ scripts currently run manually; automation (target selection,
+# verification, reporting) will be wired up here and gated on restore.enabled.
+# The file intentionally contains no tasks: the include is ready, the content
+# comes later.

@@ -1,0 +1,23 @@
+#!/bin/bash
+# OpenBao Raft Snapshot Backup
+# Managed by Ansible - {{ ansible_managed }}
+
+set -euo pipefail
+
+BAO_BIN="{{ openbao_bin }}"
+BACKUP_DIR="{{ openbao_backup_dir }}"
+RETENTION_DAYS={{ openbao_backup_retention_days }}
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+SNAPSHOT_FILE="${BACKUP_DIR}/raft-snapshot-${TIMESTAMP}.snap"
+
+mkdir -p "${BACKUP_DIR}"
+
+# Raft snapshot al
+${BAO_BIN} operator raft snapshot save "${SNAPSHOT_FILE}"
+
+# Eski yedekleri temizle
+find "${BACKUP_DIR}" -name "raft-snapshot-*.snap" -mtime +${RETENTION_DAYS} -delete
+
+# Backup boyutu
+SIZE=$(du -h "${SNAPSHOT_FILE}" | cut -f1)
+echo "[$(date)] Snapshot saved: ${SNAPSHOT_FILE} (${SIZE})"

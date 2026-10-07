@@ -1,0 +1,16 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: http-to-https-redirect
+  namespace: {{ gateway_namespace | default('kube-system') }}
+spec:
+  parentRefs:
+    - name: {{ gateway_hostname }}
+      namespace: {{ gateway_namespace | default('kube-system') }}
+      sectionName: http
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301

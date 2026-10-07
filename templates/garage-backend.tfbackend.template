@@ -1,0 +1,17 @@
+# Garage S3 Backend Configuration
+# Olusturma: scripts/generate-garage-backend.sh ile otomatik
+# Duzenleme: El ile degil, generate scriptini yeniden calistir
+# Kullanim: tofu init -backend-config=<bu_dosya>
+
+endpoints = {
+  s3 = "http://{{GARAGE_IP}}:{{GARAGE_PORT}}"
+}
+bucket                      = "{{GARAGE_BUCKET}}"
+key                         = "{{STACK}}/terraform.tfstate"
+region                      = "{{GARAGE_REGION}}"
+access_key                  = "{{GARAGE_ACCESS_KEY}}"
+secret_key                  = "{{GARAGE_SECRET_KEY}}"
+skip_credentials_validation = true
+skip_metadata_api_check     = true
+skip_requesting_account_id  = true
+skip_region_validation      = true

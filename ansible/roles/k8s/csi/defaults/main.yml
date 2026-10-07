@@ -1,0 +1,11 @@
+---
+# CSI driver uygulama sürümü (image tag)
+csi_driver_version: "1.6.0"
+
+# Helm chart sürümü — uygulama sürümünden bağımsızdır. Plan Faz 1.5.3: pinli (0.29.4'te teyitli anahtarlar).
+csi_chart_version: ""
+openbao_csi_chart_version: "0.29.4"
+
+openbao_tls_cert_path: /etc/bao/certs/cert.pem
+
+

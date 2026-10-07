@@ -1,0 +1,130 @@
+# Prometheus - tum cluster scrape + kubelet + apiserver + DNS (cluster entity)
+# NOT: nameOverride=kube-prom-stack oldugu icin app.kubernetes.io/name TUM pod'larda
+# "kube-prom-stack" olur; component ayrimi icin app.kubernetes.io/component kullanildi.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: prometheus-egress
+  namespace: "{{ chart_cfg.namespace }}"
+spec:
+  description: "Prometheus: cluster geneli scrape + kubelet + apiserver (cluster entity)"
+  endpointSelector:
+    matchLabels:
+      k8s:app.kubernetes.io/name: prometheus
+  ingress:
+  - fromEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: "{{ chart_cfg.namespace }}"
+    toPorts:
+    - ports:
+      - port: "9090"
+        protocol: TCP
+  egress:
+  - toEntities:
+    - cluster
+  # Backup metrik scrape egress'i BURADA DEGIL — dis hedef CIDR iznini
+  # maintenance rolueri uygular (roles/maintenance → monitoring.yml, /32).
+
+---
+# Grafana - UI ingress + Prometheus sorgu (DNS global CCNP ile)
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: grafana-policy
+  namespace: "{{ chart_cfg.namespace }}"
+spec:
+  description: "Grafana: ingress UI + Prometheus sorgu"
+  endpointSelector:
+    matchLabels:
+      k8s:app.kubernetes.io/name: grafana
+  ingress:
+  - fromEntities:
+    - ingress
+    toPorts:
+    - ports:
+      - port: "3000"
+        protocol: TCP
+  egress:
+  - toEndpoints:
+    - matchLabels:
+        k8s:app.kubernetes.io/name: prometheus
+        k8s:io.kubernetes.pod.namespace: "{{ chart_cfg.namespace }}"
+    toPorts:
+    - ports:
+      - port: "9090"
+        protocol: TCP
+
+---
+# Alertmanager - alert push ingress + external notif + HA gossip
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: alertmanager-policy
+  namespace: "{{ chart_cfg.namespace }}"
+spec:
+  description: "Alertmanager: Prometheus alert push + notif + gossip"
+  endpointSelector:
+    matchLabels:
+      k8s:app.kubernetes.io/name: alertmanager
+  ingress:
+  - fromEntities:
+    - ingress
+    toPorts:
+    - ports:
+      - port: "9093"
+        protocol: TCP
+  - fromEndpoints:
+    - matchLabels:
+        k8s:app.kubernetes.io/name: prometheus
+        k8s:io.kubernetes.pod.namespace: "{{ chart_cfg.namespace }}"
+    toPorts:
+    - ports:
+      - port: "9093"
+        protocol: TCP
+  egress:
+  - toEntities:
+    - world
+    toPorts:
+    - ports:
+      - port: "443"
+        protocol: TCP
+      - port: "587"
+        protocol: TCP
+  - toEndpoints:
+    - matchLabels:
+        k8s:app.kubernetes.io/name: alertmanager
+        k8s:io.kubernetes.pod.namespace: "{{ chart_cfg.namespace }}"
+    toPorts:
+    - ports:
+      - port: "9094"
+        protocol: TCP
+
+---
+# Prometheus Operator - apiserver yonetim + Prometheus server erisimi
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: prometheus-operator-egress
+  namespace: "{{ chart_cfg.namespace }}"
+spec:
+  description: "Operator: apiserver CRD yonetimi + Prometheus server"
+  endpointSelector:
+    matchLabels:
+      k8s:app.kubernetes.io/component: prometheus-operator
+  egress:
+  - toEntities:
+    - kube-apiserver
+    toPorts:
+    - ports:
+      - port: "443"
+        protocol: TCP
+      - port: "6443"
+        protocol: TCP
+  - toEndpoints:
+    - matchLabels:
+        k8s:app.kubernetes.io/name: prometheus
+        k8s:io.kubernetes.pod.namespace: "{{ chart_cfg.namespace }}"
+    toPorts:
+    - ports:
+      - port: "9090"
+        protocol: TCP

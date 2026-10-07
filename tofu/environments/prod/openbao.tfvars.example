@@ -1,0 +1,8 @@
+# Prod - OpenBao LXC
+# Template: debian-13-standard (Proxmox LXC)
+template_file_id = "local:vztmpl/ubuntu-26.04-standard_26.04-1_amd64.tar.zst"
+base_ip        = "164.102.98.0"
+ip_mask        = 24
+ip_offset      = 186
+gateway        = "164.102.98.70"
+dns_server     = "1.1.1.1"

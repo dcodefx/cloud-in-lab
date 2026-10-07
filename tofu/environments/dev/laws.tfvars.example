@@ -1,0 +1,9 @@
+# Dev - Laws AWS Emulator
+# Single LXC container, Rust binary, no Docker needed
+
+ct_id        = 302
+cpu_cores    = 1
+memory_dedicated = 2048
+disk_size    = "20"
+ip_offset    = 201
+template_file_id = "local:vztmpl/ubuntu-26.04-standard_26.04-1_amd64.tar.zst"

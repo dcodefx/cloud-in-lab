@@ -1,0 +1,27 @@
+# Prometheus -> off-cluster node-exporter egress permission — GENERATED, DO NOT EDIT.
+# Owner: roles/maintenance -> monitoring.yml (kubectl apply, k8s-master-1).
+# The homelab toCIDR block in the prom_stack cilium policy was removed; this is
+# restricted to an explicit /32 list (targets from the inventory: m_external_exporter_ips).
+# endpointSelector: the current label of the prometheus pod (same as the chart
+# policy — VERIFY ON THE FIRST RUN with kubectl get pods -n monitoring --show-labels).
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-external-exporter-scrape
+  namespace: "{{ maintenance_prom_namespace }}"
+  labels:
+    app.kubernetes.io/managed-by: maintenance
+spec:
+  description: "prometheus pod -> off-cluster node-exporter (garage/openbao) :9100 backup metrics scrape"
+  endpointSelector:
+    matchLabels:
+      k8s:app.kubernetes.io/name: prometheus
+  egress:
+    - toCIDR:
+{% for ip in m_external_exporter_ips %}
+        - {{ ip }}/32
+{% endfor %}
+      toPorts:
+        - ports:
+            - port: "{{ maintenance.backup.node_exporter_listen | regex_replace('^:', '') }}"
+              protocol: TCP

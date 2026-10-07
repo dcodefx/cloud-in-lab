@@ -1,0 +1,42 @@
+---
+# no_log is intentionally absent: restic errors (AccessDenied, NoSuchBucket,
+# connection failures) must stay visible or the failure cannot be diagnosed.
+- name: "restic repo: open/check (credential decrypted — .secrets.conf)"
+  when: m_restic_jobs_local | length > 0
+  ansible.builtin.shell:
+    # bash is mandatory: the here-string below is not POSIX, and the Debian /
+    # Ubuntu default /bin/sh is dash.
+    executable: /bin/bash
+    cmd: |
+      set -a
+      . {{ m_conf }}/backup/{{ item.key }}.env
+      set +a
+      if ! command -v systemd-creds >/dev/null 2>&1; then
+        echo "FATAL: systemd-creds not found (systemd < 250) — credential cannot be decrypted" >&2
+        exit 1
+      fi
+      _secrets={{ m_conf }}/backup/{{ item.key }}.secrets.conf
+      if [ ! -f "$_secrets" ]; then
+        echo "FATAL: $_secrets not found — the encrypt-creds step did not complete" >&2
+        exit 1
+      fi
+      # --name is mandatory: systemd-creds compares the given name against the
+      # one embedded in the ciphertext. encrypt-creds seals as <job>-secrets
+      # while the file on disk is <job>.secrets.conf, so they never match.
+      if ! _out="$(systemd-creds decrypt --name="{{ item.key }}-secrets" "$_secrets")"; then
+        echo "FATAL: credential could not be decrypted — the systemd-creds message follows" >&2
+        exit 1
+      fi
+      set -a
+      # shellcheck disable=SC1090
+      . /dev/stdin <<< "$_out"
+      set +a
+      unset _out _secrets
+      # This branch only answers "does init need to run?", so its output is
+      # discarded on purpose.
+      timeout -k 10 {{ restic_timeout_sec }} {{ restic_bin }} cat config >/dev/null 2>&1 \
+        || timeout -k 10 {{ restic_timeout_sec }} {{ restic_bin }} init
+  loop: "{{ m_restic_jobs_local }}"
+  register: m_repo_init
+  # restic reports progress on stderr, so both streams are searched.
+  changed_when: "'created restic repository' in (m_repo_init.stdout ~ m_repo_init.stderr)"

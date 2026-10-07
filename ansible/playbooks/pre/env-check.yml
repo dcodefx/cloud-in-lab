@@ -1,0 +1,130 @@
+---
+- name: Collect host environment data
+  hosts: all:!localhost
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Collect OS and kernel versions
+      ansible.builtin.set_fact:
+        _os_id: "{{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}"
+        _kernel: "{{ ansible_facts.kernel }}"
+        _arch: "{{ ansible_facts.architecture }}"
+
+    - name: Collect package versions (stack-agnostic)
+      ansible.builtin.shell: |
+        if command -v dpkg-query >/dev/null 2>&1; then
+          dpkg-query -W -f='${Version}' "{{ item }}" 2>/dev/null || echo "NOT_INSTALLED"
+        elif command -v rpm >/dev/null 2>&1; then
+          rpm -q --queryformat='%{VERSION}' "{{ item }}" 2>/dev/null || echo "NOT_INSTALLED"
+        else
+          echo "UNKNOWN_PKG_MGR"
+        fi
+      loop:
+        - containerd
+        - kubelet
+        - kubeadm
+        - kubectl
+      register: _pkg_versions
+      changed_when: false
+      failed_when: false
+
+    - name: Store package versions as flat facts
+      ansible.builtin.set_fact:
+        _pkg_containerd: "{{ (_pkg_versions.results | selectattr('item', 'equalto', 'containerd') | map(attribute='stdout') | first) | default('?') }}"
+        _pkg_kubelet: "{{ (_pkg_versions.results | selectattr('item', 'equalto', 'kubelet') | map(attribute='stdout') | first) | default('?') }}"
+        _pkg_kubeadm: "{{ (_pkg_versions.results | selectattr('item', 'equalto', 'kubeadm') | map(attribute='stdout') | first) | default('?') }}"
+        _pkg_kubectl: "{{ (_pkg_versions.results | selectattr('item', 'equalto', 'kubectl') | map(attribute='stdout') | first) | default('?') }}"
+
+    - name: Check swap is disabled
+      ansible.builtin.shell: swapon --show | wc -l
+      register: _swap
+      changed_when: false
+
+    - name: Check disk space
+      ansible.builtin.shell: df -BG /var/lib | awk 'NR==2 {print $4}' | tr -d 'G'
+      register: _disk
+
+    - name: Check memory
+      ansible.builtin.shell: free -m | awk '/^Mem:/ {print $2}'
+      register: _mem
+
+    - name: Check kernel modules
+      ansible.builtin.shell: "modprobe {{ item }} && echo OK || echo MISSING"
+      loop:
+        - overlay
+        - br_netfilter
+      register: _modules
+      changed_when: false
+
+- name: Cross-host comparison (control node)
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Aggregate all host data
+      ansible.builtin.set_fact:
+        _all_hosts: >
+          {{
+            groups['all']
+            | reject('equalto', 'localhost')
+            | map('extract', hostvars)
+            | selectattr('_os_id', 'defined')
+            | list
+          }}
+
+    - name: Per-host summary
+      ansible.builtin.debug:
+        msg: |
+          {{ item.inventory_hostname }} ({{ item.ansible_host | default('?') }})
+            OS:      {{ item._os_id | default('?') }}
+            Kernel:  {{ item._kernel | default('?') }}
+            Arch:    {{ item._arch | default('?') }}
+            RAM:     {{ item._mem.stdout | default('?') }}MB
+            Disk:    {{ item._disk.stdout | default('?') }}G free
+            Swap:    {{ 'ACTIVE' if (item._swap.stdout | default('0')) | int > 0 else 'off' }}
+            Packages:
+              containerd: {{ item._pkg_containerd | default('?') }}
+              kubelet:    {{ item._pkg_kubelet | default('?') }}
+              kubeadm:    {{ item._pkg_kubeadm | default('?') }}
+              kubectl:    {{ item._pkg_kubectl | default('?') }}
+      loop: "{{ _all_hosts }}"
+
+    - name: Version drift checks
+      ansible.builtin.set_fact:
+        _drift: "{{ drift_raw | from_json }}"
+      vars:
+        drift_raw: |
+          {% set ns = namespace(issues=[]) %}
+          {% set os_uniq = _all_hosts | map(attribute='_os_id') | unique | list %}
+          {% if os_uniq | length > 1 %}
+            {% set _ = ns.issues.append('OS: ' + (os_uniq | join(', '))) %}
+          {% endif %}
+          {% set krn_uniq = _all_hosts | map(attribute='_kernel') | unique | list %}
+          {% if krn_uniq | length > 1 %}
+            {% set _ = ns.issues.append('Kernel: ' + (krn_uniq | join(', '))) %}
+          {% endif %}
+          {% for pkg in ['containerd', 'kubelet', 'kubeadm', 'kubectl'] %}
+            {% set attr = '_pkg_' + pkg %}
+            {% set versions = _all_hosts | map(attribute=attr) | unique | list %}
+            {% set installed = versions | reject('equalto', 'NOT_INSTALLED') | reject('equalto', '?') | list %}
+            {% if installed | length > 1 %}
+              {% set _ = ns.issues.append(pkg + ': ' + (installed | join(', '))) %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.issues | to_json }}
+
+    - name: Show drift warnings
+      ansible.builtin.debug:
+        msg: "⚠ Version drift detected: {{ item }}"
+      loop: "{{ _drift }}"
+      when: _drift | length > 0
+
+    - name: All consistent
+      ansible.builtin.debug:
+        msg: "✓ All servers are on the same version level"
+      when: _drift | length == 0
+
+    - name: Missing kernel modules
+      ansible.builtin.debug:
+        msg: "⚠ {{ item.inventory_hostname }}: {{ item._modules.results | selectattr('stdout', 'equalto', 'MISSING') | map(attribute='item') | join(', ') }} missing kernel module"
+      loop: "{{ _all_hosts }}"
+      when: item._modules.results | selectattr('stdout', 'equalto', 'MISSING') | list | length > 0

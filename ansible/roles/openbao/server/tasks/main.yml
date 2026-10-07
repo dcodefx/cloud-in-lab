@@ -1,0 +1,57 @@
+---
+- name: Set flat vars from nested structure
+  ansible.builtin.set_fact:
+    openbao_version: "{{ openbao.version }}"
+    openbao_ip: "{{ hostvars[groups.openbao[0]].ansible_host | default(ansible_host) }}"
+    openbao_port: "{{ openbao.port }}"
+    openbao_cluster_port: "{{ openbao.cluster_port }}"
+  changed_when: false
+
+- name: Set OpenBao addresses from IP
+  ansible.builtin.set_fact:
+    openbao_api_addr: "https://{{ openbao_ip }}:{{ openbao_port }}"
+    openbao_cluster_addr: "https://{{ openbao_ip }}:{{ openbao_cluster_port }}"
+  changed_when: false
+
+# SSH key bootstrap: BPG provider key injection calisirsa gerek yok, calismazsa
+# Ansible zaten baglanamaz. Debian 13'te varsayilan PermitRootLogin
+# prohibit-password oldugu icin password fallback da mumkun degil.
+# Gerekirse elle: pct enter <CT_ID> && ssh-keygen -A && ... 
+#- name: Bootstrap SSH public key (password auth fallback)
+#  ansible.posix.authorized_key:
+#    user: root
+#    key: "{{ lookup('ansible.builtin.file', '~/.ssh/id_ed25519.pub') }}"
+#    comment: ansible-bootstrap
+#    state: present
+#  when:
+#    - ansible_connection == 'ssh'
+#    - ansible_user == 'root'
+#
+#- name: Disable root password auth (enforce key-only after bootstrap)
+#  ansible.builtin.lineinfile:
+#    path: /etc/ssh/sshd_config
+#    regexp: '^PermitRootLogin'
+#    line: PermitRootLogin prohibit-password
+#  notify: restart openbao
+
+- name: Include OS-specific setup
+  ansible.builtin.include_tasks: "os_{{ ansible_facts['os_family'] | lower }}.yml"
+
+- name: Include install tasks
+  ansible.builtin.include_tasks: install.yml
+
+- name: Include configure tasks
+  ansible.builtin.include_tasks: configure.yml
+
+- name: Include systemd tasks
+  ansible.builtin.include_tasks: systemd.yml
+
+- name: Include init tasks
+  ansible.builtin.include_tasks: init.yml
+
+- name: Include bootstrap tasks (mounts + engine content, root once)
+  ansible.builtin.include_tasks: bootstrap.yml
+
+- name: Include backup tasks
+  ansible.builtin.include_tasks: backup.yml
+  when: openbao_backup_enabled

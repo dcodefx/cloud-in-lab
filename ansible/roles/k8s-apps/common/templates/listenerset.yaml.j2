@@ -1,0 +1,31 @@
+{#
+  roles/k8s-apps/common/templates/listenerset.yaml.j2
+  Sadece tls.mode == 'dedicated' olduğunda render edilir.
+  Certificate ve ListenerSet aynı namespace'te → ReferenceGrant gerekmez.
+#}
+apiVersion: gateway.networking.k8s.io/v1
+kind: ListenerSet
+metadata:
+  name: {{ name }}-listeners
+  namespace: {{ namespace }}
+  labels:
+    app.kubernetes.io/managed-by: app-deploy
+    app.kubernetes.io/name: {{ name }}
+spec:
+  parentRef:
+    name: {{ gateway_hostname }}
+    kind: Gateway
+    namespace: {{ gateway_namespace | default('kube-system') }}
+  listeners:
+    - name: {{ name }}-https
+      hostname: {{ dedicated_hostname }}
+      port: 443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: {{ name }}-tls
+            kind: Secret
+      allowedRoutes:
+        namespaces:
+          from: Same

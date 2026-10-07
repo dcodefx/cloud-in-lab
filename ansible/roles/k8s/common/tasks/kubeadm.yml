@@ -1,0 +1,80 @@
+---
+- name: Create apt keyrings directory (Debian)
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Add Kubernetes apt repository (Debian)
+  ansible.builtin.shell: |
+    curl -fsSL https://pkgs.k8s.io/core:/stable:/v{{ k8s_version.split('.')[0:2]|join('.') }}/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v{{ k8s_version.split('.')[0:2]|join('.') }}/deb/ /" > /etc/apt/sources.list.d/kubernetes.list
+  args:
+    creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Add Kubernetes yum repository (RedHat)
+  ansible.builtin.shell: |
+    cat <<EOF > /etc/yum.repos.d/kubernetes.repo
+    [kubernetes]
+    name=Kubernetes
+    baseurl=https://pkgs.k8s.io/core:/stable:/v{{ k8s_version.split('.')[0:2]|join('.') }}/rpm/
+    enabled=1
+    gpgcheck=1
+    gpgkey=https://pkgs.k8s.io/core:/stable:/v{{ k8s_version.split('.')[0:2]|join('.') }}/rpm/repodata/repomd.xml.key
+    EOF
+  args:
+    creates: /etc/yum.repos.d/kubernetes.repo
+  when: ansible_facts['os_family'] == "RedHat"
+
+- name: Install kubeadm, kubelet, kubectl (Debian)
+  ansible.builtin.apt:
+    name:
+      - "kubelet={{ k8s_version }}-*"
+      - "kubeadm={{ k8s_version }}-*"
+      - "kubectl={{ k8s_version }}-*"
+    state: present
+    update_cache: true
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Install kubeadm, kubelet, kubectl (RedHat)
+  ansible.builtin.dnf:
+    name:
+      - "kubelet-{{ k8s_version }}-*"
+      - "kubeadm-{{ k8s_version }}-*"
+      - "kubectl-{{ k8s_version }}-*"
+    state: present
+  when: ansible_facts['os_family'] == "RedHat"
+
+- name: Hold kubernetes packages (Debian)
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubelet
+    - kubeadm
+    - kubectl
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Hold kubernetes packages (RedHat)
+  ansible.builtin.shell: |
+    yum versionlock add {{ item }}
+  loop:
+    - kubelet
+    - kubeadm
+    - kubectl
+  when: ansible_facts['os_family'] == "RedHat"
+  failed_when: false
+
+- name: Enable and start kubelet (idempotent; on fresh install kubeadm init/join manages it)
+  ansible.builtin.systemd:
+    name: kubelet
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Clean apt cache and remove unused packages (Debian)
+  ansible.builtin.shell: apt-get clean && apt-get autoremove -y
+  changed_when: false
+  when: ansible_facts['os_family'] == "Debian"

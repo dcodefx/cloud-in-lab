@@ -1,0 +1,18 @@
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: openbao-pki
+spec:
+  vault:
+    server: {{ openbao_address }}
+    path: pki-int/sign/{{ openbao_pki_role }}
+{% if _ca_bundle | default('') %}
+    caBundle: "{{ _ca_bundle }}"
+{% endif %}
+    auth:
+      appRole:
+        path: approle
+        roleId: "{{ cert_manager_role_id }}"
+        secretRef:
+          name: cert-manager-approle
+          key: secret_id

@@ -1,0 +1,34 @@
+---
+# produce-transit-key.yml — K8s apps tarafı
+# ---------------------------------------------------------------------------
+# Her app deploy'da çalışır. Transit key yoksa self-service açar (check-then-create).
+# Token: ops-admin (openbao-ops/tasks/main.yml'de set edilir)
+#
+# Girdi (çağıran taraf verir):
+#   _scope        — ör. "transit-demo"
+# ---------------------------------------------------------------------------
+
+- name: "Does transit key already exist: {{ _scope }}-{{ openbao_key }}"
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/transit/keys/{{ _scope }}-{{ openbao_key }}"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    validate_certs: false
+    status_code: [200, 404]
+  register: _transit_key_check
+
+- name: "Creating new transit key: {{ _scope }}-{{ openbao_key }}"
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/transit/keys/{{ _scope }}-{{ openbao_key }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      type: "aes256-gcm96"
+      exportable: false
+      allow_plaintext_backup: false
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+  when: _transit_key_check.status == 404

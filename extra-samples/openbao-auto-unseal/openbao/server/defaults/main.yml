@@ -1,0 +1,22 @@
+---
+# OpenBao Auto-Unseal defaults - PKCS#11 / SoftHSM2 plugin tabanlı
+# Bu dosya örnek amaçlıdır. Mevcut Ansible projesine kopyalanmadan önce
+# değişken isimleri ve yollar projenize göre uyarlanmalıdır.
+
+openbao_autounseal_enabled: false
+
+# Plugin binary konumu
+openbao_plugin_dir: "/opt/openbao/plugins"
+openbao_pkcs11_plugin_bin: "openbao-plugin-kms-pkcs11_linux_amd64_v1"
+openbao_pkcs11_plugin_sha256: ""
+
+# SoftHSM2
+openbao_softhsm_lib_path: "/usr/lib/softhsm/libsofthsm2.so"
+openbao_softhsm_pin: ""
+openbao_softhsm_token_label: "openbao"
+openbao_softhsm_key_label: "aes-root"
+openbao_softhsm_token_dir: "/var/lib/softhsm/tokens"
+openbao_softhsm_group: "softhsm"
+
+# Systemd / dosya izinleri için ek yollar
+openbao_autounseal_readonly_paths: "/var/lib/softhsm/tokens"

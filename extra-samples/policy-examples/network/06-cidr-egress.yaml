@@ -1,0 +1,43 @@
+---
+# ============================================
+# Policy: allow-cidr-egress
+# Tür: CiliumClusterwideNetworkPolicy
+# Katman: Güvenlik / Ağ (Network Policy)
+# ============================================
+# Ne işe yarar:
+#   Seçili pod'ların cluster dışındaki belirli bir IP/CIDR
+#   aralığına erişmesine izin verir.
+#
+# Kullanım senaryosu:
+#   cert-manager pod'ları, cluster dışındaki bir OpenBao
+#   LXC'sine (164.102.98.186:8200) bağlanmak zorunda.
+#   Bu policy ile sadece o IP:port'a erişim izni verilir.
+#
+# toCIDR vs toFQDNs:
+#   - toCIDR: IP adresi sabit olan hedefler için
+#             (OpenBao, veritabanı, API)
+#   - toFQDNs: Domain ile değişen hedefler için
+#              (Stripe, AWS, GitHub)
+#
+# endpointSelector:
+#   Sadece cert-manager pod'larını seçer.
+#   app.kubernetes.io/name: cert-manager label'ı
+#   cert-manager'ın standart helm label'ıdır.
+# ============================================
+
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: allow-cert-manager-openbao-egress
+spec:
+  description: "cert-manager pod'larının OpenBao LXC'ye (164.102.98.186:8200) erişmesine izin verir"
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: cert-manager
+  egress:
+  - toCIDR:
+    - 164.102.98.186/32
+    toPorts:
+    - ports:
+      - port: "8200"
+        protocol: TCP

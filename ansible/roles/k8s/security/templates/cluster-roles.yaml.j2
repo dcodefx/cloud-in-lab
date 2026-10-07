@@ -1,0 +1,258 @@
+# ============================================
+# AGGREGATION LABELS
+# ============================================
+# rbac.aggregate/viewer:     read-only access (pods, logs, workloads)
+# rbac.aggregate/developer:  read + pod exec/portforward + workload ops
+# rbac.aggregate/deployer:   CI/CD (deployment/service/configmap CRUD)
+# rbac.aggregate/admin:      full namespace access (includes secrets)
+# rbac.aggregate/monitoring: cluster-wide node/pod metrics
+# ============================================
+
+# ============================================
+# READ ROLES
+# ============================================
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: pod-reader
+  labels:
+    rbac.aggregate/viewer: "true"
+    rbac.aggregate/developer: "true"
+    rbac.aggregate/admin: "true"
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: pod-log-reader
+  labels:
+    rbac.aggregate/viewer: "true"
+    rbac.aggregate/developer: "true"
+    rbac.aggregate/admin: "true"
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: workload-viewer
+  labels:
+    rbac.aggregate/viewer: "true"
+    rbac.aggregate/developer: "true"
+    rbac.aggregate/admin: "true"
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "endpoints", "events", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: full-viewer
+  labels:
+    rbac.aggregate/admin: "true"
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "endpoints", "events", "persistentvolumeclaims", "secrets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+
+# ============================================
+# WRITE ROLES
+# ============================================
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: pod-operator
+  labels:
+    rbac.aggregate/developer: "true"
+    rbac.aggregate/admin: "true"
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec", "pods/portforward"]
+    verbs: ["create"]
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: workload-operator
+  labels:
+    rbac.aggregate/developer: "true"
+    rbac.aggregate/admin: "true"
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale", "statefulsets/scale"]
+    verbs: ["get", "update", "patch"]
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: config-editor
+  labels:
+    rbac.aggregate/deployer: "true"
+    rbac.aggregate/admin: "true"
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: deployer
+  labels:
+    rbac.aggregate/deployer: "true"
+    rbac.aggregate/admin: "true"
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update"]
+
+# ============================================
+# MONITORING
+# ============================================
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: monitoring-reader
+  labels:
+    rbac.aggregate/monitoring: "true"
+    rbac.aggregate/admin: "true"
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/proxy", "nodes/stats", "services", "endpoints", "pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list", "watch"]
+
+# ============================================
+# AGGREGATED ROLES
+# Bu roller etiket bazinda otomatik bilesir.
+# Yeni bir ClusterRole ekleyip uygun label'i verince
+# bu roller otomatik olarak genisler.
+# ============================================
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: aggregated-viewer
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        rbac.aggregate/viewer: "true"
+rules: []
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: aggregated-developer
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        rbac.aggregate/developer: "true"
+rules: []
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: aggregated-deployer
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        rbac.aggregate/deployer: "true"
+rules: []
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: aggregated-admin
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        rbac.aggregate/admin: "true"
+rules: []
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: aggregated-monitoring
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        rbac.aggregate/monitoring: "true"
+rules: []
+
+# ============================================
+# CUSTOM CLUSTER ROLES
+# inventory/group_vars/all.yml -> custom_cluster_roles
+# Ayni name ile birden cok entry -> tek ClusterRole altinda coklu rule
+# ============================================
+{% for name in (custom_cluster_roles | default([]) | map(attribute='name') | unique | list) %}
+{% set role_rules = custom_cluster_roles | selectattr('name', 'equalto', name) | list %}
+{% if role_rules | selectattr('aggregates', 'defined') | list %}
+{% set all_aggregates = role_rules | selectattr('aggregates', 'defined') | map(attribute='aggregates') | flatten | unique | list %}
+{% else %}
+{% set all_aggregates = [] %}
+{% endif %}
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: {{ name }}
+{% if all_aggregates %}
+  labels:
+{% for agg in all_aggregates %}
+    rbac.aggregate/{{ agg }}: "true"
+{% endfor %}
+{% endif %}
+rules:
+{% for rule in role_rules %}
+  - apiGroups: {{ rule.apiGroups | to_json }}
+    resources: {{ rule.resources | to_json }}
+    verbs: {{ rule.verbs | to_json }}
+{% endfor %}
+{% endfor %}

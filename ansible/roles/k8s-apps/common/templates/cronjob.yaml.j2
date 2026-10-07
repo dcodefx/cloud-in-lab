@@ -1,0 +1,135 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ name }}
+  namespace: {{ namespace }}
+  labels:
+    app.kubernetes.io/managed-by: app-deploy
+    app.kubernetes.io/name: {{ name }}
+{% if app.labels | default({}) %}
+{{ app.labels | to_nice_yaml(indent=2) | indent(4, True) }}
+{% endif %}
+{% if app.annotations | default({}) %}
+  annotations: {{ app.annotations | to_json }}
+{% endif %}
+spec:
+  schedule: "{{ schedule }}"
+{% if app.timezone is defined %}
+  timeZone: {{ app.timezone }}
+{% endif %}
+{% if app.concurrencyPolicy is defined %}
+  concurrencyPolicy: {{ app.concurrencyPolicy }}
+{% endif %}
+{% if app.startingDeadlineSeconds is defined %}
+  startingDeadlineSeconds: {{ app.startingDeadlineSeconds }}
+{% endif %}
+{% if app.successfulJobsHistoryLimit is defined %}
+  successfulJobsHistoryLimit: {{ app.successfulJobsHistoryLimit }}
+{% endif %}
+{% if app.failedJobsHistoryLimit is defined %}
+  failedJobsHistoryLimit: {{ app.failedJobsHistoryLimit }}
+{% endif %}
+{% if app.suspend is defined %}
+  suspend: {{ app.suspend | to_json }}
+{% endif %}
+  jobTemplate:
+    spec:
+{% if app.backoffLimit is defined %}
+      backoffLimit: {{ app.backoffLimit }}
+{% endif %}
+{% if app.ttlSecondsAfterFinished is defined %}
+      ttlSecondsAfterFinished: {{ app.ttlSecondsAfterFinished }}
+{% endif %}
+{% if app.completions is defined %}
+      completions: {{ app.completions }}
+{% endif %}
+{% if app.parallelism is defined %}
+      parallelism: {{ app.parallelism }}
+{% endif %}
+{% if app.activeDeadlineSeconds is defined %}
+      activeDeadlineSeconds: {{ app.activeDeadlineSeconds }}
+{% endif %}
+      template:
+        metadata:
+          labels:
+            app: {{ name }}
+{% if app.templateLabels | default({}) %}
+{{ app.templateLabels | to_nice_yaml(indent=2) | indent(12, True) }}
+{% endif %}
+{% if app.templateAnnotations | default({}) %}
+          annotations: {{ app.templateAnnotations | to_json }}
+{% endif %}
+        spec:
+{% if app.serviceAccountName | default('') %}
+          serviceAccountName: {{ app.serviceAccountName }}
+{% endif %}
+{% if app.imagePullSecrets | default([]) %}
+          imagePullSecrets: {{ app.imagePullSecrets | to_json }}
+{% endif %}
+{% if app.podSecurityContext | default({}) %}
+          securityContext: {{ app.podSecurityContext | to_json }}
+{% endif %}
+{% if app.nodeSelector | default({}) %}
+          nodeSelector: {{ app.nodeSelector | to_json }}
+{% endif %}
+{% if app.affinity | default({}) %}
+          affinity: {{ app.affinity | to_json }}
+{% endif %}
+{% if app.tolerations | default([]) %}
+          tolerations: {{ app.tolerations | to_json }}
+{% endif %}
+{% if app.terminationGracePeriodSeconds is defined %}
+          terminationGracePeriodSeconds: {{ app.terminationGracePeriodSeconds }}
+{% endif %}
+          restartPolicy: {{ app.restartPolicy | default('Never') }}
+          containers:
+            - name: {{ name }}
+              image: {{ image }}
+{% if app.command | default([]) %}
+              command: {{ app.command | to_json }}
+{% endif %}
+{% if app.args | default([]) %}
+              args: {{ app.args | to_json }}
+{% endif %}
+{% if app.workingDir is defined %}
+              workingDir: {{ app.workingDir }}
+{% endif %}
+{% if app.imagePullPolicy is defined %}
+              imagePullPolicy: {{ app.imagePullPolicy }}
+{% endif %}
+{% if app.env | default({}) %}
+              env:
+{% for k, v in app.env.items() %}
+                - name: "{{ k }}"
+                  value: "{{ v }}"
+{% endfor %}
+{% endif %}
+{% if app.envFrom | default([]) %}
+              envFrom: {{ app.envFrom | to_json }}
+{% endif %}
+{% if app.resources | default({}) %}
+              resources:
+{{ app.resources | to_nice_yaml(indent=2) | indent(16, True) }}
+{% endif %}
+{% if app.volumeMounts | default([]) %}
+              volumeMounts:
+{% for vm in app.volumeMounts %}
+                - name: {{ vm.name }}
+                  mountPath: {{ vm.mountPath }}
+{% if vm.subPath is defined %}
+                  subPath: {{ vm.subPath }}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% if app.containerSecurityContext | default({}) %}
+              securityContext: {{ app.containerSecurityContext | to_json }}
+{% endif %}
+{% if app.volumes | default([]) %}
+          volumes:
+{% for v in app.volumes %}
+            - name: {{ v.name }}
+{% for key, val in v.items() if key != 'name' %}
+{{ {key: val} | to_nice_yaml(indent=2) | indent(14, True) }}
+{% endfor %}
+{% endfor %}
+{% endif %}

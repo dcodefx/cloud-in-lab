@@ -1,0 +1,42 @@
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: allow-apiserver-egress-baseline
+spec:
+  description: "Control-plane namespace'leri (kube-system, cert-manager) -> kube-apiserver egress"
+  endpointSelector:
+    matchExpressions:
+    - key: k8s:io.kubernetes.pod.namespace
+      operator: In
+      values:
+      - kube-system
+      - cert-manager
+      - monitoring
+  egress:
+  - toEntities:
+    - kube-apiserver
+    toPorts:
+    - ports:
+      - port: "443"
+        protocol: TCP
+      - port: "6443"
+        protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: allow-apiserver-egress-by-label
+spec:
+  description: "homelab.io/allow-apiserver-egress etiketli pod'lar -> kube-apiserver egress (self-service)"
+  endpointSelector:
+    matchLabels:
+      k8s:homelab.io/allow-apiserver-egress: "true"
+  egress:
+  - toEntities:
+    - kube-apiserver
+    toPorts:
+    - ports:
+      - port: "443"
+        protocol: TCP
+      - port: "6443"
+        protocol: TCP

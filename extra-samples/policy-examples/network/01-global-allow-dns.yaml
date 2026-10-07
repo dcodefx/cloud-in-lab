@@ -1,0 +1,39 @@
+---
+# ============================================
+# Policy: global-allow-essential-dns
+# Tür: CiliumClusterwideNetworkPolicy
+# Katman: Güvenlik / Ağ (Network Policy)
+# ============================================
+# Ne işe yarar:
+#   Tüm pod'ların kube-system namespace'indeki CoreDNS'e
+#   (k8s-app: kube-dns) UDP ve TCP 53 üzerinden sorgu
+#   yapmasına izin verir.
+#
+# Global-default-deny-all ile birlikte kullanılması zorunludur.
+# Bu policy olmazsa hiçbir pod domain çözümlemesi yapamaz.
+#
+# DNS kuralları:
+#   - toPorts altında rules.dns.matchPattern: "*" ile
+#     her türlü DNS sorgusuna izin verilir.
+#   - protocol: ANY = hem UDP hem TCP'yi kapsar.
+# ============================================
+
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: global-allow-essential-dns
+spec:
+  description: "Tüm pod'larin CoreDNS üzerinden DNS sorgusu yapmasina izin verir"
+  endpointSelector: {}
+  egress:
+  - toEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: kube-system
+        k8s-app: kube-dns
+    toPorts:
+    - ports:
+      - port: "53"
+        protocol: ANY
+      rules:
+        dns:
+        - matchPattern: "*"

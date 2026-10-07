@@ -1,0 +1,134 @@
+---
+- name: Deploy kubeadm configuration
+  ansible.builtin.template:
+    src: kubeadm-config.yaml.j2
+    dest: /tmp/kubeadm-config.yaml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Ensure /etc/kubernetes directory exists
+  ansible.builtin.file:
+    path: /etc/kubernetes
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure anonymous authentication for health endpoints
+  ansible.builtin.copy:
+    dest: /etc/kubernetes/authn-anonymous.yaml
+    content: |
+      apiVersion: apiserver.config.k8s.io/v1
+      kind: AuthenticationConfiguration
+      anonymous:
+        enabled: true
+        conditions:
+        - path: /livez
+        - path: /readyz
+        - path: /healthz
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Pull Kubernetes control plane images
+  ansible.builtin.command:
+    cmd: kubeadm config images pull --config /tmp/kubeadm-config.yaml
+  register: _pull
+  changed_when: _pull.rc == 0
+  until: _pull is success
+  retries: 3
+  when: not _admin_conf.stat.exists or force_reset | default(false) | bool
+
+- name: Initialize Kubernetes control plane
+  block:
+    - name: Check for stale kubeadm state
+      ansible.builtin.stat:
+        path: /var/lib/kubelet/config.yaml
+      register: _kubeadm_done
+
+    - name: Clean up stale kubeadm state
+      ansible.builtin.command:
+        cmd: kubeadm reset --force
+      when: _kubeadm_done.stat.exists
+      changed_when: false
+
+    - name: Initialize Kubernetes cluster
+      ansible.builtin.command:
+        cmd: kubeadm init --config /tmp/kubeadm-config.yaml --skip-phases=addon/kube-proxy
+      register: _init
+
+    - name: Wait for API server to become healthy
+      ansible.builtin.shell:
+        cmd: kubectl --kubeconfig=/etc/kubernetes/admin.conf --request-timeout=10s get --raw /healthz 2>/dev/null
+      register: _healthz
+      until: _healthz.stdout == "ok"
+      retries: 20
+      delay: 5
+
+    - name: Mark first bootstrap
+      ansible.builtin.set_fact:
+        _first_boot: true
+  rescue:
+    - name: Capture kubelet logs after init failure
+      ansible.builtin.shell: |
+        echo "=== CONTAINERD ==="
+        systemctl is-active containerd 2>&1
+        echo "=== CRICTL PS ==="
+        crictl ps -a 2>&1 || echo "crictl not available"
+        echo "=== CRICTL IMAGES (control plane) ==="
+        crictl images 2>&1 | grep -E '(kube-apiserver|kube-controller|kube-scheduler|etcd)' || echo "no images found"
+        echo "=== KUBELET LOGS (last 30) ==="
+        journalctl -u kubelet --no-pager -n 30 2>&1
+        echo "=== APISERVER POD LOGS ==="
+        crictl pods 2>&1 | grep -i apiserver || echo "no apiserver pod"
+        echo "=== APISERVER CONTAINER LOG ==="
+        _apipod=$(crictl pods --name apiserver -q 2>/dev/null | head -1) && \
+          crictl logs "$(crictl ps --pod "$_apipod" -q 2>/dev/null | head -1)" 2>&1 || \
+          echo "no apiserver container log"
+      register: _diag
+      changed_when: false
+
+    - name: Show diagnostic information
+      ansible.builtin.debug:
+        msg: "{{ _diag.stdout.split('\n') }}"
+
+    - name: Fail with diagnostic information
+      ansible.builtin.fail:
+        msg: |
+          kubeadm init failed — wait-control-plane timeout.
+          API server pod'u baslatilamadi veya hazir hale gelemedi.
+
+          Yukaridaki diagnostic ciktisini inceleyin:
+          - "crictl ps -a": apiserver pod'u crashloop'ta mi?
+          - "crictl images": imajlar cekilmis mi?
+          - "journalctl -u kubelet": kubelet hatasi ne?
+
+          Cozum:
+          - containerd durduysa: ssh {{ ansible_facts['hostname'] }} 'systemctl restart containerd'
+          - Kaynak yetersizse: VM'lere daha fazla CPU/RAM verin
+          - Tekrar denemek icin: ansible-playbook ... k8s.yml
+          (kubeadm reset otomatik calisacak)
+  when: not _admin_conf.stat.exists or force_reset | default(false) | bool
+
+- name: Configure admin.conf permissions
+  ansible.builtin.file:
+    path: /etc/kubernetes/admin.conf
+    mode: "0644"
+
+- name: Create kubeconfig directory
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.kube"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0700"
+
+- name: Copy admin kubeconfig to user directory
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "/home/{{ ansible_user }}/.kube/config"
+    remote_src: true
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0600"

@@ -1,0 +1,26 @@
+---
+- name: Flatten floci vars
+  ansible.builtin.set_fact:
+    floci_version: "{{ floci.floci_version }}"
+    floci_port: "{{ floci.floci_port }}"
+    floci_storage_mode: "{{ floci.floci_storage_mode }}"
+    floci_region: "{{ floci.floci_region }}"
+    floci_account_id: "{{ floci.floci_account_id }}"
+
+- name: Create Floci directory
+  ansible.builtin.file:
+    path: /opt/floci
+    state: directory
+    mode: "0755"
+
+- name: Deploy Floci compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /opt/floci/docker-compose.yml
+    mode: "0644"
+  notify: Restart Floci
+
+- name: Ensure Floci is started
+  community.docker.docker_compose_v2:
+    project_src: /opt/floci
+    state: present

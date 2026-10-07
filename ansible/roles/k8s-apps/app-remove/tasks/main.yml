@@ -1,0 +1,242 @@
+---
+# app-remove: app-deploy'un tersi, ayrı dünya.
+# - apply (app-deploy) yalnız `enable`'a bakar.
+# - remove yalnız hedef listesine bakar: CLI `-e remove="a,b"` kazanır,
+#   verilmediyse apps[] içinde `state: absent` olanlar.
+# Silinecek objeler cluster'dan keşfedilir (managed-by label + api-resources
+# ile dinamik tip listesi); envanter yalnız hedef adını belirler.
+# Namespace en sonda silinebilir — yalnız içinde başka app kalmamışsa ve
+# başka yoldan yüklenmiş yabancı obje yoksa.
+
+- name: Gate — kubectl access check (fail-loud)
+  ansible.builtin.shell:
+    cmd: kubectl get ns
+  changed_when: false
+
+- name: Read CLI remove target
+  ansible.builtin.set_fact:
+    _remove_cli: "{{ remove | default('') }}"
+
+- name: Collect inventory names with state == absent (state defaults to present)
+  ansible.builtin.set_fact:
+    _absent_names: "{{ _absent_names | default([]) + [item.name] }}"
+  loop: "{{ apps | default([]) }}"
+  when: (item.state | default('present')) == 'absent'
+
+- name: Resolve target names (CLI wins if set, else state == absent)
+  ansible.builtin.set_fact:
+    _targets_from_cli: "{{ (_remove_cli | trim) | length > 0 }}"
+    _target_names: >-
+      {{ (_remove_cli | trim | string).split(',') | map('trim') | reject('equalto', '') | list
+         if (_remove_cli | trim) | length > 0
+         else (_absent_names | default([])) }}
+
+- name: No-op — no target
+  ansible.builtin.debug:
+    msg: "Remove target not found — nothing was deleted."
+  when: _target_names | length == 0
+
+- name: Collect namespace list from inventory (target apps' namespaces)
+  ansible.builtin.set_fact:
+    _affected_namespaces: >-
+      {{ apps | json_query('[?contains(`' + (_target_names | to_json) + '`, name)] | [].{ns: namespace || name}')
+         | map(attribute='ns') | list | unique }}
+  when: _target_names | length > 0
+
+- name: Fetch deletable namespaced resource types (dynamic, from cluster)
+  ansible.builtin.shell:
+    cmd: "kubectl api-resources --verbs=delete --namespaced -o name | grep -vE '^(events|endpoints|endpointslices|pods)(\\..*)?$' | paste -sd ',' -"
+  register: _kinds_raw
+  changed_when: false
+  failed_when: false
+  when: _target_names | length > 0
+
+- name: Fail — could not fetch resource type list
+  ansible.builtin.fail:
+    msg: "kubectl api-resources failed (rc={{ _kinds_raw.rc | default('?') }}): {{ _kinds_raw.stderr | default('') }}"
+  when: (_target_names | length > 0) and (_kinds_raw.stdout | default('') | trim | length == 0)
+
+- name: Set resource type list
+  ansible.builtin.set_fact:
+    _all_kinds: "{{ _kinds_raw.stdout | trim }}"
+  when: (_target_names | length > 0) and (_kinds_raw.rc | default(1) == 0)
+
+- name: Delete target app objects (expected inventory list)
+  ansible.builtin.include_tasks: delete-k8s-objects.yml
+  loop: "{{ _target_names }}"
+  loop_control:
+    loop_var: target_name
+  vars:
+    target_app: "{{ apps | selectattr('name', 'equalto', target_name) | first | default({}) }}"
+  when: _target_names | length > 0
+
+- name: Dedicated domain cleanup (ClusterIssuer + OpenBao role, if unused)
+  ansible.builtin.include_tasks: delete-dedicated-pki.yml
+  when: _target_names | length > 0
+
+- name: OpenBao §7 AppRole cleanup (guarded, if unused)
+  ansible.builtin.include_tasks: delete-openbao-approle.yml
+  vars:
+    target_app: "{{ apps | selectattr('name', 'equalto', target_name) | first | default({}) }}"
+  loop: "{{ _target_names }}"
+  loop_control:
+    loop_var: target_name
+  when:
+    - _target_names | length > 0
+    - target_app is defined
+    - target_app.openbao is defined
+    - target_app.openbao.enable | default(false)
+
+- name: Shared-ns guard — other apps running in same ns? (inventory)
+  ansible.builtin.set_fact:
+    _ns_state: "{{ _ns_state | default([]) + [_row] }}"
+  loop: "{{ _affected_namespaces | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  vars:
+    _row:
+      ns: "{{ item }}"
+      blocked_by: "{{ apps | default([]) | selectattr('enable', 'equalto', true) | rejectattr('name', 'in', _target_names) | selectattr('namespace', 'equalto', item) | rejectattr('state', 'equalto', 'absent') | map(attribute='name') | list }}"
+  when: _target_names | length > 0
+
+- name: Report namespaces running other apps (untouched)
+  ansible.builtin.debug:
+    msg: "Kept (shared): {{ item.ns }} — running: {{ item.blocked_by | join(', ') }}"
+  loop: "{{ _ns_state | default([]) | selectattr('blocked_by') | list }}"
+  loop_control:
+    label: "{{ item.ns }}"
+  when: _target_names | length > 0
+
+- name: Extract candidate namespaces (not shared)
+  ansible.builtin.set_fact:
+    _ns_candidates: "{{ _ns_state | default([]) | rejectattr('blocked_by') | map(attribute='ns') | list }}"
+  when: _target_names | length > 0
+
+- name: Foreign resources left in candidate namespaces? (single query, -o name)
+  ansible.builtin.shell:
+    cmd: "kubectl get {{ _all_kinds }} -n {{ item }} -o name"
+  loop: "{{ _ns_candidates | default([]) }}"
+  register: _ns_remaining
+  changed_when: false
+  failed_when: false
+  when: _target_names | length > 0
+
+- name: Filter system defaults; compute real leftovers
+  ansible.builtin.set_fact:
+    _ns_remaining_filtered: "{{ _ns_remaining_filtered | default([]) + [_entry] }}"
+  loop: "{{ _ns_remaining.results | default([]) }}"
+  loop_control:
+    label: "{{ _raw.item }}"
+    loop_var: _raw
+  vars:
+    _lines: "{{ _raw.stdout_lines | default([]) | reject('equalto', '') | list }}"
+    _real: "{{ _lines | reject('search', '/kube-root-ca\\.crt$') | reject('match', '^serviceaccount/default$') | reject('search', '/default-token-') | list }}"
+    _entry:
+      item: "{{ _raw.item }}"
+      rc: "{{ _raw.rc | default(1) }}"
+      remaining_count: "{{ _real | length }}"
+      remaining_names: "{{ _real }}"
+  when: _target_names | length > 0
+
+- name: Extract empty namespaces (truly no resources left)
+  ansible.builtin.set_fact:
+    _ns_to_delete: >-
+      {{ _ns_remaining_filtered | default([])
+         | selectattr('rc', 'equalto', 0)
+         | selectattr('remaining_count', 'equalto', 0)
+         | map(attribute='item')
+         | list }}
+  when: (_target_names | length > 0) and (_ns_remaining_filtered is defined)
+
+- name: Delete namespace (150s timeout)
+  ansible.builtin.shell:
+    cmd: "timeout 150 kubectl delete namespace {{ item }} --wait=true"
+  register: _ns_delete
+  changed_when: false
+  failed_when: false
+  loop: "{{ _ns_to_delete | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Namespace not deleted — running checks
+  ansible.builtin.debug:
+    msg: |
+      namespace/{{ item }} could not be deleted within 150s.
+      Things to check:
+        1. kubectl get namespace {{ item }} -o json | jq '.spec.finalizers'
+        2. kubectl get namespace {{ item }} -o json | jq '.status.conditions'
+        3. kubectl get apiservice v1beta1.metrics.k8s.io (if broken: kubectl delete apiservice v1beta1.metrics.k8s.io)
+        4. kubectl get pods -n kube-system | grep metrics (if pod is crash-looping: kubectl delete pod -n kube-system -l k8s-app=metrics-server)
+  loop: "{{ _ns_delete.results | default([]) | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Patch namespace finalizer + delete again
+  ansible.builtin.shell:
+    cmd: |
+      kubectl patch namespace {{ item }} \
+        -p '{"spec":{"finalizers":null}}' \
+        --type=merge && \
+      kubectl delete namespace {{ item }} --wait=false
+  register: _ns_force
+  changed_when: false
+  failed_when: false
+  loop: "{{ _ns_delete.results | default([]) | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Namespace deleted (report)
+  ansible.builtin.debug:
+    msg: "{{ item }} deleted."
+  loop: "{{ _ns_delete.results | default([]) | selectattr('rc', 'equalto', 0) | map(attribute='item') | list }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Namespace deleted after finalizer cleanup (report)
+  ansible.builtin.debug:
+    msg: "{{ item }} deleted after finalizer cleanup."
+  loop: "{{ _ns_delete.results | default([]) | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
+  loop_control:
+    label: "{{ item }}"
+  when: (_ns_force.results | default([]) | selectattr('item', 'equalto', item) | map(attribute='rc') | first | default(0)) == 0
+
+- name: WARNING — namespace still not deleted (report)
+  ansible.builtin.debug:
+    msg: |
+      WARNING: {{ item }} still could not be deleted.
+      Manual intervention may be required. Commands:
+        kubectl get namespace {{ item }} -o json | jq '.status.conditions'
+        kubectl get apiservice v1beta1.metrics.k8s.io
+      Likely root cause: metrics.k8s.io/v1beta1 broken (scale metrics-server to 0 or delete the APIService)
+  loop: "{{ _ns_delete.results | default([]) | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
+  loop_control:
+    label: "{{ item }}"
+  when: (_ns_force.results | default([]) | selectattr('item', 'equalto', item) | map(attribute='rc') | first | default(0)) != 0
+
+- name: Report namespaces that still contain resources (untouched)
+  ansible.builtin.debug:
+    msg: "Kept (resources remain): {{ item.item }} — remaining ({{ item.remaining_count }}): {{ item.remaining_names | join(', ') }}"
+  loop: "{{ _ns_remaining_filtered | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: (_target_names | length > 0) and (_ns_remaining_filtered is defined) and (item.rc == 0) and (item.remaining_count | int > 0)
+
+- name: Report namespaces whose query failed (untouched)
+  ansible.builtin.debug:
+    msg: "WARNING: {{ item.item }} namespace query failed (rc={{ item.rc }}), not modified."
+  loop: "{{ _ns_remaining_filtered | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: (_target_names | length > 0) and (_ns_remaining_filtered is defined) and (item.rc != 0)
+
+- name: Remove summary
+  ansible.builtin.debug:
+    msg: >-
+      Remove completed. Targets: {{ _target_names | join(', ') }}.
+      Deleted namespaces: {{ _ns_deleted | join(', ') if (_ns_deleted | length > 0) else 'none' }}.
+      Kept namespaces: {{ _ns_kept | join(', ') if (_ns_kept | length > 0) else 'none' }}.
+  vars:
+    _ns_deleted: "{{ ((_ns_delete.results | default([]) | selectattr('rc', 'equalto', 0) | map(attribute='item') | list) + (_ns_delete.results | default([]) | selectattr('rc', 'ne', 0) | map(attribute='item') | select('in', _ns_forced_ok) | list)) | unique | list }}"
+    _ns_forced_ok: "{{ _ns_force.results | default([]) | selectattr('rc', 'equalto', 0) | map(attribute='item') | list }}"
+    _ns_kept: "{{ ((_ns_state | default([]) | selectattr('blocked_by') | map(attribute='ns') | list) + (_ns_remaining_filtered | default([]) | selectattr('remaining_count', 'ne', 0) | map(attribute='item') | list)) | unique | list }}"
+  when: _target_names | length > 0

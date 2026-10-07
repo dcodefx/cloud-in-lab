@@ -1,0 +1,67 @@
+---
+# Presence check first (openbao init.yml stat→fail pattern): if §5 on the
+# garage-backup host did not complete, stop here with instructions instead of
+# a raw lookup error on each host.
+- name: "Check Garage2 key files (controller)"
+  when: m_restic_jobs_local | length > 0
+  ansible.builtin.stat:
+    path: "{{ m_garage_out_dir }}/{{ item.value.bucket }}.key"
+  delegate_to: localhost
+  become: false
+  loop: "{{ m_restic_jobs_local }}"
+  loop_control:
+    label: "{{ item.value.bucket }}"
+  register: m_keyfile_pre
+
+- name: "Garage2 key file MISSING — stop (garage-provision did not complete)"
+  ansible.builtin.fail:
+    msg: >-
+      Missing key file on controller: {{ m_keyfile_pre.results | rejectattr('stat.exists') | list | map(attribute='item.value.bucket') | unique | join(', ') }}
+      → {{ m_garage_out_dir }}/<bucket>.key
+      The Garage2 provision block (garage-provision.yml, garage-backup host) did not run/succeed.
+      Check: garage-backup in maintenance.ini? pre/maintenance-env-check passed?
+      (README §Kurulum — chef.sh → gen-restic-passwords → gen-maintenance-inventory)
+  when: >-
+    m_restic_jobs_local | length > 0
+    and (m_keyfile_pre.results | rejectattr('stat.exists') | list | length > 0)
+
+- name: "Garage2 key file format check (KEY_ID + SECRET present exactly once)"
+  when: m_restic_jobs_local | length > 0
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.file', m_garage_out_dir ~ '/' ~ item.value.bucket ~ '.key') | regex_findall('(?m)^KEY_ID=(.+)$') | length == 1
+      - lookup('ansible.builtin.file', m_garage_out_dir ~ '/' ~ item.value.bucket ~ '.key') | regex_findall('(?m)^SECRET=(.+)$') | length == 1
+    fail_msg: >-
+      {{ m_garage_out_dir }}/{{ item.value.bucket }}.key is malformed: expected
+      exactly one non-empty `KEY_ID=` line and one non-empty `SECRET=` line.
+      The file exists (checked above) but is empty, truncated or a partial write.
+      Do NOT let the role regenerate it — Garage shows the secret only at
+      CreateKey time, so this file is the only copy. Restore it from your own
+      backup first; only then decide about recreating the access key.
+    success_msg: "key file format ok: {{ item.value.bucket }}"
+  loop: "{{ m_restic_jobs_local }}"
+  loop_control:
+    label: "{{ item.value.bucket }}"
+
+- name: "Garage2: read/parse bucket key files"
+  when: m_restic_jobs_local | length > 0
+  ansible.builtin.set_fact:
+    m_garage_keys: >-
+      {{ m_garage_keys | default({}) | combine({
+           item.value.bucket: {
+             'id': lookup('ansible.builtin.file', m_garage_out_dir ~ '/' ~ item.value.bucket ~ '.key')
+                   | regex_findall('(?m)^KEY_ID=(.+)$') | first | trim,
+             'secret': lookup('ansible.builtin.file', m_garage_out_dir ~ '/' ~ item.value.bucket ~ '.key')
+                   | regex_findall('(?m)^SECRET=(.+)$') | first | trim
+           }
+         }) }}
+  loop: "{{ m_restic_jobs_local }}"
+  no_log: true
+
+- name: Write job env files (0600 — generated output, do not edit by hand)
+  when: m_restic_jobs_local | length > 0
+  ansible.builtin.template:
+    src: backup.env.j2
+    dest: "{{ m_conf }}/backup/{{ item.key }}.env"
+    mode: "0600"
+  loop: "{{ m_restic_jobs_local }}"

@@ -1,0 +1,12 @@
+---
+- import_playbook: pre/connect.yml
+
+- name: Deploy Laws server
+  hosts: laws
+  become: true
+  tasks:
+    - name: Install Laws
+      ansible.builtin.include_role:
+        name: ../roles/laws
+      tags: ['laws']
+      when: laws.enable | default(false) | bool

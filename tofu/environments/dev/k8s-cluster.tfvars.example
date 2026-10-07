@@ -1,0 +1,31 @@
+# Dev - K8s Cluster
+node_pools = {
+  masters = {
+    role              = "k8s-master"
+    vm_name           = "k8s-master"
+    vm_count          = 1
+    cpu_cores         = 2
+    vm_memory         = 4096
+    disk_size         = 40
+    disk_storage      = "local-lvm"
+    data_disk_enabled = false
+    data_disk_size    = 0
+    data_disk_storage = "local-lvm"
+    ip_start_index    = 171
+    template_vm_id    = 9010
+  }
+  workers = {
+    role              = "k8s-worker"
+    vm_name           = "k8s-worker"
+    vm_count          = 2
+    cpu_cores         = 2
+    vm_memory         = 6192
+    disk_size         = 50
+    disk_storage      = "local-lvm"
+    data_disk_enabled = false
+    data_disk_size    = 0
+    data_disk_storage = "local-lvm"
+    ip_start_index    = 181
+    template_vm_id    = 9010
+  }
+}

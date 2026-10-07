@@ -1,0 +1,154 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ name }}
+  namespace: {{ namespace }}
+  labels:
+    app.kubernetes.io/managed-by: app-deploy
+    app.kubernetes.io/name: {{ name }}
+{% if app.labels | default({}) %}
+{{ app.labels | to_nice_yaml(indent=2) | indent(4, True) }}
+{% endif %}
+{% if app.annotations | default({}) %}
+  annotations: {{ app.annotations | to_json }}
+{% endif %}
+spec:
+  replicas: {{ replicas | default(1) }}
+  serviceName: {{ app.serviceName | default(name) }}
+{% if app.podManagementPolicy is defined %}
+  podManagementPolicy: {{ app.podManagementPolicy }}
+{% endif %}
+{% if app.revisionHistoryLimit is defined %}
+  revisionHistoryLimit: {{ app.revisionHistoryLimit }}
+{% endif %}
+  selector:
+    matchLabels:
+      app: {{ name }}
+  template:
+    metadata:
+      labels:
+        app: {{ name }}
+{% if app.templateLabels | default({}) %}
+{{ app.templateLabels | to_nice_yaml(indent=2) | indent(8, True) }}
+{% endif %}
+{% if app.templateAnnotations | default({}) %}
+      annotations: {{ app.templateAnnotations | to_json }}
+{% endif %}
+    spec:
+{% if app.serviceAccountName | default('') %}
+      serviceAccountName: {{ app.serviceAccountName }}
+{% endif %}
+{% if app.imagePullSecrets | default([]) %}
+      imagePullSecrets: {{ app.imagePullSecrets | to_json }}
+{% endif %}
+{% if app.podSecurityContext | default({}) %}
+      securityContext: {{ app.podSecurityContext | to_json }}
+{% endif %}
+{% if app.hostNetwork is defined %}
+      hostNetwork: {{ app.hostNetwork | to_json }}
+{% endif %}
+{% if app.dnsPolicy is defined %}
+      dnsPolicy: {{ app.dnsPolicy }}
+{% endif %}
+{% if app.dnsConfig | default({}) %}
+      dnsConfig: {{ app.dnsConfig | to_json }}
+{% endif %}
+{% if app.nodeSelector | default({}) %}
+      nodeSelector: {{ app.nodeSelector | to_json }}
+{% endif %}
+{% if app.affinity | default({}) %}
+      affinity: {{ app.affinity | to_json }}
+{% endif %}
+{% if app.tolerations | default([]) %}
+      tolerations: {{ app.tolerations | to_json }}
+{% endif %}
+{% if app.terminationGracePeriodSeconds is defined %}
+      terminationGracePeriodSeconds: {{ app.terminationGracePeriodSeconds }}
+{% endif %}
+{% if app.priorityClassName | default('') %}
+      priorityClassName: {{ app.priorityClassName }}
+{% endif %}
+      containers:
+        - name: {{ name }}
+          image: {{ image }}
+{% if app.command | default([]) %}
+          command: {{ app.command | to_json }}
+{% endif %}
+{% if app.args | default([]) %}
+          args: {{ app.args | to_json }}
+{% endif %}
+{% if app.workingDir is defined %}
+          workingDir: {{ app.workingDir }}
+{% endif %}
+          ports:
+            - containerPort: {{ container_port | default(port | default(80)) }}
+{% if app.imagePullPolicy is defined %}
+          imagePullPolicy: {{ app.imagePullPolicy }}
+{% endif %}
+{% if app.env | default({}) %}
+          env:
+{% for k, v in app.env.items() %}
+            - name: "{{ k }}"
+              value: "{{ v }}"
+{% endfor %}
+{% endif %}
+{% if app.envFrom | default([]) %}
+          envFrom: {{ app.envFrom | to_json }}
+{% endif %}
+{% if app.resources | default({}) %}
+          resources:
+{{ app.resources | to_nice_yaml(indent=2) | indent(12, True) }}
+{% endif %}
+{% if app.probes is defined %}
+{% if app.probes.liveness is defined %}
+          livenessProbe:
+{{ app.probes.liveness | to_nice_yaml(indent=2) | indent(12, True) }}
+{% endif %}
+{% if app.probes.readiness is defined %}
+          readinessProbe:
+{{ app.probes.readiness | to_nice_yaml(indent=2) | indent(12, True) }}
+{% endif %}
+{% if app.probes.startup is defined %}
+          startupProbe:
+{{ app.probes.startup | to_nice_yaml(indent=2) | indent(12, True) }}
+{% endif %}
+{% endif %}
+{% if app.volumeMounts | default([]) %}
+          volumeMounts:
+{% for vm in app.volumeMounts %}
+            - name: {{ vm.name }}
+              mountPath: {{ vm.mountPath }}
+{% if vm.subPath is defined %}
+              subPath: {{ vm.subPath }}
+{% endif %}
+{% if vm.readOnly is defined %}
+              readOnly: {{ vm.readOnly | to_json }}
+{% endif %}
+{% endfor %}
+{% endif %}
+{% if app.containerSecurityContext | default({}) %}
+          securityContext: {{ app.containerSecurityContext | to_json }}
+{% endif %}
+{% if app.lifecycle is defined %}
+          lifecycle: {{ app.lifecycle | to_json }}
+{% endif %}
+{% if app.initContainers | default([]) %}
+      initContainers: {{ app.initContainers | to_json }}
+{% endif %}
+{% if app.volumes | default([]) %}
+      volumes:
+{% for v in app.volumes %}
+        - name: {{ v.name }}
+{% for key, val in v.items() if key != 'name' %}
+{{ {key: val} | to_nice_yaml(indent=2) | indent(10, True) }}
+{% endfor %}
+{% endfor %}
+{% endif %}
+{% if app.volumeClaimTemplates | default([]) %}
+  volumeClaimTemplates:
+{% for vct in app.volumeClaimTemplates %}
+    - metadata:
+        name: {{ vct.name }}
+      spec: {{ vct.spec | to_json }}
+{% endfor %}
+{% endif %}

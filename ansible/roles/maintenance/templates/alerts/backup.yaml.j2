@@ -1,0 +1,83 @@
+    - name: maintenance.backup
+      rules:
+        # The last successful backup exceeded its threshold — _common.sh writes
+        # the job interval + tolerance as backup_max_age_seconds, so a single
+        # expression covers every job (vector match on the backup_job label).
+        # Jinja note: Prometheus variables ($labels.backup_job etc.) are written with an
+        # escape pattern — raw/trim_blocks blocks in Ansible eat the line ending
+        # and used to break the YAML.
+        - alert: BackupOverdue
+          expr: time() - backup_last_success_timestamp_seconds > backup_max_age_seconds
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Backup {{ '{{ $labels.backup_job }}' }} overdue"
+            description: >-
+              Backup job {{ '{{ $labels.backup_job }}' }} freshness esigini 15 dakikadir asiyor.
+              Job durumu: systemctl status 'tofu-lar-backup-*' ;
+              metrik: backup_last_success_timestamp_seconds.
+
+        # The last run finished as a failure. alert.sh (systemd OnFailure) is the
+        # writer of the 0 — the backup scripts only ever report 1. alert.sh carries
+        # backup_last_success_timestamp_seconds / backup_max_age_seconds over from
+        # the previous file, so this firing does not blind BackupOverdue above.
+        - alert: BackupLastRunFailed
+          expr: backup_last_status == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Backup {{ '{{ $labels.backup_job }}' }} last run failed"
+            description: >-
+              Backup job {{ '{{ $labels.backup_job }}' }} son calismasi failed olarak isaretli.
+              Once journal'a bak: journalctl -u 'tofu-lar-backup-*' ;
+              ardindan backup_last_failure_timestamp_seconds.
+
+        # A problem from systemd's point of view: a failed result, never run at
+        # all, or a last run past the (interval + tolerance) window. This catches
+        # it even when the script cannot write metrics (watchdog.sh is an
+        # independent check).
+        - alert: BackupScheduleMissed
+          expr: backup_job_systemd_status == 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Backup {{ '{{ $labels.backup_job }}' }} schedule missed"
+            description: >-
+              Watchdog, {{ '{{ $labels.backup_job }}' }} job'unun systemd kaydini problemli goruyor
+              (basarisiz / hic calismamis / pencere asimi).
+              Timer listesi: systemctl list-timers 'tofu-lar-backup-*'.
+
+        # The watchdog itself runs once a day (06:00) — if it has not run for
+        # 28 hours, monitoring is blind and all the rules below go silent.
+        # (It has no job label — this is a global rule.)
+        - alert: BackupWatchdogStale
+          expr: time() - backup_watchdog_last_run_timestamp_seconds > 100800
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Backup watchdog not running"
+            description: >-
+              Watchdog 28 saattir kosmamamis.
+              Servis: systemctl status tofu-lar-backup-watchdog.timer.
+
+        # Liveness of the off-cluster node-exporter (garage-backup + openbao) —
+        # the scrape job name comes from the Service: up{job="external-node-exporter"}.
+        # CRITICAL is deliberate: when the exporter dies the textfile metrics are
+        # cut too, so BackupOverdue/LastRunFailed go silent (the whole series
+        # goes stale); this rule alone reports the blind spot. Without an SM
+        # (backup disabled) there is no series either -> the rule stays silent.
+        - alert: ExternalExporterDown
+          expr: up{job="external-node-exporter"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "External exporter {{ '{{ $labels.instance }}' }} down"
+            description: >-
+              Dis node-exporter {{ '{{ $labels.instance }}' }} 5 dakikadir cevap vermiyor
+              (garage CT veya openbao-1) — backup metrikleri akmiyor.
+              Kontrol: systemctl status prometheus-node-exporter.

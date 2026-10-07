@@ -1,0 +1,20 @@
+---
+- name: Include pre-checks
+  ansible.builtin.import_tasks: pre_checks.yml
+  tags: [pre_checks]
+
+- name: Initialize control plane
+  ansible.builtin.import_tasks: init.yml
+  tags: [init]
+
+- name: Prepare Cilium prerequisites
+  ansible.builtin.import_tasks: cni_prereqs.yml
+  tags: [cni_prereqs]
+
+- name: Deploy Cilium CNI
+  ansible.builtin.import_tasks: cni.yml
+  tags: [cni]
+
+- name: Configure post-init resources
+  ansible.builtin.import_tasks: post.yml
+  tags: [post]

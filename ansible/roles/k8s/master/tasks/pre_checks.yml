@@ -1,0 +1,16 @@
+---
+- name: Set Kubernetes version facts
+  ansible.builtin.set_fact:
+    k8s_version: "{{ k8s_cluster.version }}"
+    k8s_pod_cidr: "{{ k8s_cluster.pod_cidr }}"
+    k8s_service_cidr: "{{ k8s_cluster.service_cidr }}"
+    cilium_version: "{{ k8s_cluster.cilium }}"
+    gateway_api_version: "{{ k8s_cluster.gateway_api_version }}"
+  changed_when: false
+
+- name: Check control plane initialization status
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: _admin_conf
+  changed_when: false
+

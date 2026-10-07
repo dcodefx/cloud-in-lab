@@ -1,0 +1,6 @@
+---
+laws_version: "latest"
+laws_port: 4566
+laws_host: "0.0.0.0"
+laws_data_dir: /opt/laws/data
+laws_bin_path: /usr/local/bin/laws

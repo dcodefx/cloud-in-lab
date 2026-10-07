@@ -1,0 +1,17 @@
+---
+- name: Set flat var from nested structure
+  ansible.builtin.set_fact:
+    k8s_version: "{{ k8s_cluster.version }}"
+  changed_when: false
+
+- name: Include OS-specific setup
+  ansible.builtin.include_tasks: "os_{{ ansible_facts['os_family'] | lower }}.yml"
+
+- name: Include sysctl setup
+  ansible.builtin.include_tasks: sysctl.yml
+
+- name: Include containerd setup
+  ansible.builtin.include_tasks: containerd.yml
+
+- name: Include kubeadm setup
+  ansible.builtin.include_tasks: kubeadm.yml

@@ -1,0 +1,16 @@
+# Dev - Databases
+db_instances = {
+  primary = {
+    role              = "database"
+    vm_name           = "db-primary"
+    vm_count          = 1
+    cpu_cores         = 2
+    vm_memory         = 2048
+    disk_size         = 20
+    disk_storage      = "local-lvm"
+    data_disk_enabled = true
+    data_disk_size    = 50
+    data_disk_storage = "local-lvm"
+    ip_start_index    = 190
+  }
+}

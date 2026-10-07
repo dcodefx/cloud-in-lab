@@ -1,0 +1,48 @@
+# OpenBao Configuration
+# Managed by Ansible - {{ ansible_managed }}
+
+storage "{{ openbao_storage_type }}" {
+  path    = "{{ openbao_raft_path }}"
+  node_id = "{{ inventory_hostname }}"
+}
+
+listener "tcp" {
+  address       = "0.0.0.0:{{ openbao_port }}"
+  tls_disable   = false
+  tls_cert_file = "{{ openbao_tls_cert }}"
+  tls_key_file  = "{{ openbao_tls_key }}"
+}
+
+api_addr     = "{{ openbao_api_addr }}"
+cluster_addr = "{{ openbao_cluster_addr }}"
+ui = {{ "true" if openbao_ui_enabled else "false" }}
+
+{% if openbao_autounseal_enabled | default(false) %}
+# Auto-Unseal: PKCS#11 SoftHSM2 plugin tabanlı, 2.7 uyumlu
+plugin_directory = "{{ openbao_plugin_dir }}"
+
+plugin "kms" "pkcs11" {
+  command   = "{{ openbao_pkcs11_plugin_bin }}"
+  sha256sum = "{{ openbao_pkcs11_plugin_sha256 }}"
+}
+
+seal "pkcs11" {
+  lib         = "{{ openbao_softhsm_lib_path | default('/usr/lib/softhsm/libsofthsm2.so') }}"
+  pin         = "{{ openbao_softhsm_pin }}"
+  token_label = "{{ openbao_softhsm_token_label | default('openbao') }}"
+  key_label   = "{{ openbao_softhsm_key_label | default('aes-root') }}"
+}
+{% endif %}
+
+# Red Team hardening
+default_lease_ttl = "24h"
+max_lease_ttl     = "720h"
+
+# Audit logging
+audit "file" "audit-log" {
+  description = "OpenBao audit log"
+  options {
+    file_path = "/var/log/bao/audit.log"
+    log_raw   = "false"
+  }
+}

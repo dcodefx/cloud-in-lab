@@ -1,0 +1,37 @@
+---
+# ============================================
+# Policy: restrict-by-namespace
+# Tür: CiliumNetworkPolicy (namespace-scoped)
+# Katman: Güvenlik / Ağ (Network Policy)
+# ============================================
+# Ne işe yarar:
+#   İki namespace arasındaki trafiği kısıtlar.
+#   Bu örnekte payment-team namespace'indeki tüm pod'lar
+#   sadece frontend-team namespace'inden gelen trafiği
+#   kabul eder. Diğer namespace'lerden gelen trafik engellenir.
+#
+# Neden CiliumNetworkPolicy (namespace-scoped)?
+#   - endpointSelector sadece policy'nin kendi namespace'indeki
+#     pod'ları seçebilir
+#   - Hedef namespace: metadata.namespace
+#   - Kaynak namespace: fromEndpoints.matchLabels içinde
+#     k8s:io.kubernetes.pod.namespace ile belirtilir
+#
+# Neden CiliumClusterwideNetworkPolicy değil?
+#   - Namespace'ler arası kısıtlama için namespace-scoped
+#     policy daha uygundur
+#   - Cluster-wide kullanılırsa tüm cluster'ı etkiler
+# ============================================
+
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: restrict-by-namespace
+  namespace: payment-team
+spec:
+  description: "payment-team namespace'ine sadece frontend-team namespace'inden giriş izni verir"
+  endpointSelector: {}
+  ingress:
+  - fromEndpoints:
+    - matchLabels:
+        k8s:io.kubernetes.pod.namespace: frontend-team

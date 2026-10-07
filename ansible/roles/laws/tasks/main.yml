@@ -1,0 +1,39 @@
+---
+- name: Determine Laws asset URL
+  ansible.builtin.set_fact:
+    laws_asset: "laws-x86_64-unknown-linux-musl.tar.gz"
+    laws_base_url: "https://github.com/huseyinbabal/laws/releases"
+
+- name: Download Laws binary
+  ansible.builtin.get_url:
+    url: "{{ laws_base_url }}/{{ 'latest' if laws_version == 'latest' else 'download/v' + laws_version }}/download/{{ laws_asset }}"
+    dest: /tmp/laws.tar.gz
+    mode: "0644"
+  timeout: 60
+
+- name: Extract Laws binary
+  ansible.builtin.unarchive:
+    src: /tmp/laws.tar.gz
+    dest: /usr/local/bin
+    remote_src: true
+    mode: "0755"
+
+- name: Create Laws data directory
+  ansible.builtin.file:
+    path: "{{ laws_data_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Deploy Laws systemd unit
+  ansible.builtin.template:
+    src: laws.service.j2
+    dest: /etc/systemd/system/laws.service
+    mode: "0644"
+  notify: Restart Laws
+
+- name: Start Laws service and enable at boot
+  ansible.builtin.systemd:
+    name: laws
+    state: started
+    enabled: true
+    daemon_reload: true

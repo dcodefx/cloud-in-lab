@@ -1,0 +1,225 @@
+---
+# roles/maintenance/defaults — structural defaults + JOB MAP
+#
+# Environment overrides: inventory/group_vars/all/all.yml → `maintenance:` block.
+# NOTE (Ansible dict semantics): the group_vars `maintenance:` key REPLACES this
+# dict WHOLESALE — for a partial override, copy from here and write the full dict
+# in group_vars.
+#
+# Storage modes (MAINT_STORAGE, read from the backup scripts' env):
+#   restic  → new architecture: bucket=repo (Garage2), keep-last N, encrypted
+#   s3tier  → legacy tier tree (CT300 backups/)
+#   both    → shadow period: both; at cutover switch to "restic"
+#
+# Unit naming derived from a SINGLE source (change the project name in one line):
+#   systemd: {{ project_name }}-backup-<job>.{service,timer}
+#   env:    /etc/{{ project_name }}/backup/<job>.env
+#   metric: /var/lib/{{ project_name }}/backup-metrics/<job>.prom
+
+maintenance:
+  enable: true
+  project_name: "tofu-lar"
+  backup:
+    enabled: true
+    storage: "restic"
+    node_exporter_listen: ":9100"
+    alerts_enabled: false
+  restore:
+    enabled: false
+
+# ── Structural constants (FLAT — the group_vars `maintenance:` dict replaces
+# this dict wholesale, so env-independent keys must NOT live inside it; kept
+# flat here they are never dropped) ────────────────────────────────────────
+# NOTE: the Garage2 CT id lives ONLY in scripts/garage-setup/.garage-setup.env
+# (GARAGE_CT_ID, read by chef.sh) — ansible never sees it. The garage-backup
+# host reaches the CT via ssh (inventory), openbao-style.
+maintenance_watchdog_schedule: "*-*-* 06:00:00"
+maintenance_check_schedule: "Sat *-*-* 05:00:00"
+maintenance_node_exporter_listen: "{{ maintenance.backup.node_exporter_listen | default(':9100') }}"
+# Garage2 S3 endpoint (bucket=repo model) — ENV-DEGISKENI AMA DICT-ICTINDE
+# DEGIL: group_vars `maintenance:` bu dict'i TÜMÜYLE degistirir (hash_behaviour
+# = replace) → dict icindeki anahtar group_vars'tan silinince undefined olur.
+# Duz (flat) tutuldugu icin hicbir zaman dusmez. Envanterdeki [garage-backup]
+# host'undan turetilir (hardcoded IP YOK): CT IP degisince sabit deger olu
+# uretiyordu (restic init asili kalip basarisiz oluyordu). hostvars envanter
+# group_vars icinde degerlendirilemez ('hostvars is undefined') → BURADA,
+# gorev aninda cozumlenir.
+maintenance_garage2_endpoint: "http://{{ ((groups.get('garage-backup', []) | map('extract', hostvars, 'ansible_host') | list) + [''])[0] }}:3900"
+# PrometheusRule hedefi (monitoring.yml alerts uygular — k8s-master-1
+# uzerinden kubectl). Degerler kube-prom-stack chart defaults ile ayni
+# olmali (k8s_apps.yml charted.prom_stack); degisirse iki yer guncellenir.
+maintenance_prom_namespace: "monitoring"
+maintenance_prom_release: "kube-prom-stack"
+
+# ── Restic (pinned version + sha256 verification) ────────────────────────
+restic_version: "0.19.1"
+restic_sha256: "f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c"
+restic_arch_map:
+  x86_64: "amd64"
+  aarch64: "arm64"
+restic_bin: "/usr/local/bin/restic"
+# restic komut saniyesi (dead endpoint/CT asili kalmasin). systemd-run DEGIL:
+# her restic cagrisi 'timeout -k 10 <sec>' ile sarilir → -k (kill-after)
+# olmadan TERM'i yutan surecler sonsuza kadar bekler (PRENSIPLER §16).
+restic_timeout_sec: 60
+
+# ── etcdctl (job'a bagli harici binary) ──────────────────────────────────
+# backup-etcd.sh `command -v etcdctl || ${HOME}/bin/etcdctl` arar (satir 72);
+# systemd unit Environment=HOME={{ m_home }} verir → kurulum yolu m_home/bin
+# OLMAK ZORUNDA, sabit /home/<user> DEGIL (root baglantisinda /root/bin).
+# Surum ETCD ile ayni major.minor olmak ZORUNDA: etcd snapshot'i yalniz
+# kaydedildigi surumun etcdctl'si ile geri yuklenebilir. Buradaki deger,
+# calisan etcd static pod imajinin surumuyle eslesmelidir.
+# Sorgu: kubectl -n kube-system get pod -l component=etcd -o jsonpath='{..image}'
+etcdctl_version: "3.6.8"
+etcdctl_bin: "{{ m_home }}/bin/etcdctl"
+etcdctl_url: "https://github.com/etcd-io/etcd/releases/download/v{{ etcdctl_version }}/etcd-{{ 'v' + etcdctl_version }}-linux-{{ (restic_arch_map[ansible_architecture] | default('amd64')) }}.tar.gz"
+etcdctl_sums_url: "https://github.com/etcd-io/etcd/releases/download/v{{ etcdctl_version }}/SHA256SUMS"
+# get_url her seferinde indirip atmasin; surum degisince yenilensin.
+etcdctl_cache: "/var/cache/tofu-lar/downloads"
+
+# ── JOB MAP ──────────────────────────────────────────────────────────────
+# host       → group host name in maintenance-<ctid>.ini.generated
+# script     → script shipped under maintenance/ (relative path)
+# schedule   → systemd OnCalendar deklaratif zamanlama ifadesi. Çakışmasız
+#              pencereler tanımlanır ve timer doğrudan bu takvimi çalıştırır.
+# keep_last  → restic --keep-last N (bucket can never exceed N; series starts at first run)
+# interval_h/tolerance_h → healthcheck threshold + watchdog window + BACKUP_MAX_AGE_SECONDS
+# restic     → true: env/repo/pw distributed (all jobs are restic jobs;
+#            vm-disk scripts stay manual tools, outside this map)
+# etcdctl    → true: job'ın script'i etcdctl'e ihtiyaç duyar → tasks/dependencies.yml
+#            binary'yi {{ etcdctl_bin }} altına kurar ve sürümünü doğrular
+# state_name → .state/metric name (aligned with the healthcheck dictionary)
+# bucket     → Garage2 bucket (bucket=repo)
+maintenance_jobs:
+  etcd-daily:
+    host: "k8s-master-1"
+    script: "backup/app-data/backup-etcd.sh"
+    schedule: "*-*-* 01,05,09,13,17,21:00:00"
+    keep_last: 12
+    interval_h: 4
+    tolerance_h: 2
+    restic: true
+    etcdctl: true
+    state_name: "etcd-daily"
+    bucket: "etcd-daily"
+  etcd-weekly:
+    host: "k8s-master-1"
+    script: "backup/app-data/backup-etcd.sh"
+    schedule: "Sun *-*-* 03:00:00"
+    keep_last: 3
+    interval_h: 168
+    tolerance_h: 48
+    restic: true
+    etcdctl: true
+    state_name: "etcd-weekly"
+    bucket: "etcd-weekly"
+  etcd-monthly:
+    host: "k8s-master-1"
+    script: "backup/app-data/backup-etcd.sh"
+    schedule: "*-*-01 03:30:00"
+    keep_last: 3
+    interval_h: 720
+    tolerance_h: 168
+    restic: true
+    etcdctl: true
+    state_name: "etcd-monthly"
+    bucket: "etcd-monthly"
+  openbao-daily:
+    host: "openbao-1"
+    script: "backup/app-data/backup-openbao.sh"
+    schedule: "*-*-* 02,06,10,14,18,22:00:00"
+    keep_last: 3
+    interval_h: 24
+    tolerance_h: 2
+    restic: true
+    state_name: "openbao-daily"
+    bucket: "openbao-daily"
+  openbao-weekly:
+    host: "openbao-1"
+    script: "backup/app-data/backup-openbao.sh"
+    schedule: "Sun *-*-* 04:00:00"
+    keep_last: 3
+    interval_h: 168
+    tolerance_h: 48
+    restic: true
+    state_name: "openbao-weekly"
+    bucket: "openbao-weekly"
+  openbao-monthly:
+    host: "openbao-1"
+    script: "backup/app-data/backup-openbao.sh"
+    schedule: "*-*-01 04:30:00"
+    keep_last: 3
+    interval_h: 720
+    tolerance_h: 168
+    restic: true
+    state_name: "openbao-monthly"
+    bucket: "openbao-monthly"
+# ── Derived values (do not touch — lazy eval) ────────────────────────────
+m_prefix: "{{ maintenance.project_name }}-backup"
+m_conf: "/etc/{{ maintenance.project_name }}"
+m_metrics: "/var/lib/{{ maintenance.project_name }}/backup-metrics"
+# Repo root konvansiyonu (hardcoded host map YOK — otomatik turetilir):
+# root baglaniyorsa /root/<project>, degilse /home/<user>/<project>.
+m_root: "{{ ('/root' if ansible_user == 'root' else '/home/' + ansible_user) + '/' + maintenance.project_name }}"
+# Deploy kullanıcısının evi — unit'te Environment=HOME= için. Servis process'i
+# User= olmadan root ile çalışır; ${HOME}/bin/* yedek aramasının hangi evi
+# tarayacağı deploy kullanıcısına bağlıdır (k8s master: ubuntu → /home/ubuntu).
+m_home: "{{ '/root' if ansible_user == 'root' else '/home/' + ansible_user }}"
+m_maint_src: "{{ playbook_dir }}/../../maintenance"
+m_garage_out_dir: "{{ playbook_dir }}/../outputs/garage-backups{{ '/' + m_ct_subdir if m_ct_subdir is match('^ct-[0-9]+$') else '' }}"
+# Per-CT alt dizin: maintenance-<ctid>.ini.generated ile kosulunca ct-<ctid>
+# (chef uretir); eski tek isimli ini'de eslesme yok → duz dizin (fallback).
+# Kaynak: ansible_inventory_sources (inventory_file magic var'i core 2.21'de
+# tanimsiz — default('') ile sessiz bos uretiyordu).
+m_ct_subdir: "{{ (((ansible_inventory_sources | default([])) | map('basename') | select('search', '^maintenance-[0-9]+\\.ini\\.generated$') | list) + [''])[0] | regex_replace('^maintenance-([0-9]+)\\.ini\\.generated$', 'ct-\\1') }}"
+m_jobs_local: "{{ maintenance_jobs | dict2items | selectattr('value.host', 'equalto', inventory_hostname) | list }}"
+m_restic_jobs_local: "{{ m_jobs_local | selectattr('value.restic', 'equalto', true) | list }}"
+# etcdctl'e ihtiyac duyan YEREL job'lar → tasks/dependencies.yml yalnizca
+# bos olmadiginda binary'yi kurar. selectattr 'defined' ile: bayrak
+# hicbir job'da yoksa (openbao-1 gibi) liste bos kalir, hata vermez.
+m_etcdctl_jobs_local: "{{ m_jobs_local | selectattr('value.etcdctl', 'defined') | selectattr('value.etcdctl', 'equalto', true) | list }}"
+# Exporter gereken hostlar (hardcoded liste YOK — otomatik turetilir):
+# job'u olan hostlar MINUS k8s master'lar (master'da DaemonSet vardir).
+m_exporter_hosts: "{{ maintenance_jobs | dict2items | map(attribute='value.host') | unique | difference(groups.get('k8s_master', [])) | list }}"
+# garage-backup group from maintenance.ini (garage2 = Garage2 CT over ssh).
+# Empty when the group is absent → §5 ensure tasks skip everywhere.
+m_garage_hosts: "{{ groups.get('garage-backup', []) }}"
+
+# ── §2 selective tree sync — only what each host needs ─────────────────────
+# KISALTMALAR: dr = Disaster Recovery (felaket kurtarma). Bu bloktaki iki
+# degiskende geçer: m_tree_dr_hosts, m_tree_rsync_dr.
+#
+# Ships per host: its own job script(s) + _common.sh. The DR set (restore/ +
+# backup/healthcheck.sh) goes only to hosts that perform restores. Never ships:
+# docs/, *.md, deploy/, prune-s3.sh, backup-quick.sh. Include-list tek yetkili
+# (exclude=*) — ayri elle kalindi-temizligi listesi YOK; .state disarida.
+#
+# NOT: encryption.key yedekleme job'u KALDIRILDI. Tofu state sifreleme
+# anahtari controller'da iki yerde tutulur (tofu/secrets/ + backups/, ayni
+# disk) ve homelab olceginde yeterlidir; offsite bir kopya icin ayri bir
+# job'a gerek yok. backup-key.sh de kaldirildi — encryption.key host'a
+# hic gonderilmiyordu (rsync yalniz maintenance/ agacini gonderir), yani
+# job her kosuda "Key dosyasi bulunamadi" ile oluyordu.
+#
+# m_tree_dr_hosts = DISASTER RECOVERY dosyalarinin (restore/, healthcheck.sh)
+# HANGI hostlara gidecegi. Listede olan host o dosyalari alir; olmayan ALMAZ
+# (bkz. m_tree_rsync_dr ve --exclude=* kapanisi).
+# TURETILIR, sabit liste degil: restore yapabilmek icin hostun kendi restic
+# credential'i olmali. backup.env ve restic-<job>.pw yalnizca job'in sahibi
+# hosta dagitilir (tasks/job-env.yml + tasks/restic.yml → loop:
+# m_restic_jobs_local). Ornek: openbao-*.env yalnizca openbao-1'de vardir →
+# restore-openbao.sh ancak orada calisir. Master'a tasimak Garage anahtarini
+# ikinci bir host'a cogaltmak olurdu (blast radius).
+m_tree_dr_hosts: "{{ m_restic_jobs_local | map(attribute='value.host') | unique }}"
+m_tree_rsync_base:
+  - "--exclude=.state"
+  - "--include=backup/"
+  - "--include=backup/app-data/"
+  - "--include=_common.sh"
+m_tree_rsync_jobs: "{{ m_jobs_local | map(attribute='value.script') | unique | map('regex_replace', '^', '--include=') | list }}"
+m_tree_rsync_dr: "{{ ['--include=backup/healthcheck.sh', '--include=restore/', '--include=restore/*'] if inventory_hostname in m_tree_dr_hosts else [] }}"
+m_tree_rsync_opts: "{{ m_tree_rsync_base + m_tree_rsync_jobs + m_tree_rsync_dr + ['--exclude=*'] }}"
+# ALL restic buckets (host-independent — the ensure block runs on the
+# garage-backup host but must also manage the master/openbao buckets):
+m_buckets: "{{ maintenance_jobs | dict2items | selectattr('value.restic', 'equalto', true) | map(attribute='value.bucket') | unique | list }}"

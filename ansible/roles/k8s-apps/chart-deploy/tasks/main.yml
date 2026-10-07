@@ -1,0 +1,47 @@
+---
+# Charted dispatcher — app-deploy/tasks/main.yml karşılığı.
+# Playbook (k8s_apps.yml) sade kalır; loop burada yönetilir.
+# charted/ klasörü data-only'dir (defaults + templates), task içermez.
+
+- name: Check kubeconfig exists
+  ansible.builtin.stat:
+    path: "{{ ansible_facts['user_dir'] }}/.kube/config"
+  register: _kubeconfig_stat
+
+- name: Fail if kubeconfig not found
+  ansible.builtin.fail:
+    msg: |
+      /etc/kubernetes/admin.conf bulunamadi.
+      K8s cluster kurulu degil veya henuz init edilmemis.
+      Once playbook.yml veya playbooks/k8s.yml calistirin.
+  when: not _kubeconfig_stat.stat.exists
+
+- name: Validate kubeconfig content
+  ansible.builtin.slurp:
+    src: "{{ ansible_facts['user_dir'] }}/.kube/config"
+  register: _kc
+  when: _kubeconfig_stat.stat.exists
+
+- name: Check kubeconfig has clusters entry
+  ansible.builtin.fail:
+    msg: |
+      /etc/kubernetes/admin.conf gecersiz — 'clusters' ve/veya 'current-context' eksik.
+      K8s cluster henuz tam kurulmamis olabilir.
+      Once playbook.yml veya playbooks/k8s.yml calistirin.
+  when:
+    - _kubeconfig_stat.stat.exists
+    - (_kc.content | b64decode | from_yaml).clusters | default([]) | length == 0
+      or (_kc.content | b64decode | from_yaml).get('current-context', '') == ''
+
+- name: Deploy each chart
+  ansible.builtin.include_tasks: deploy-chart.yml
+  loop: "{{ charted | default({}) | dict2items }}"
+  loop_control:
+    loop_var: chart
+    label: "{{ chart.key }}"
+  vars:
+    chart_key: "{{ chart.key }}"
+  # Tek chart calistirma: -e chart_filter=<key> (bos ise tum enable:true chart'lar)
+  when:
+    - chart.value.enable | default(false) | bool
+    - chart_filter | default('') | length == 0 or chart.key == chart_filter

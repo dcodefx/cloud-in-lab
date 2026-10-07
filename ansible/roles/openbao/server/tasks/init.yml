@@ -1,0 +1,254 @@
+---
+- name: Wait for OpenBao port
+  ansible.builtin.wait_for:
+    host: "{{ openbao_ip }}"
+    port: "{{ openbao_port }}"
+    timeout: 60
+    state: started
+  changed_when: false
+
+- name: Check if initialized
+  ansible.builtin.uri:
+    url: "https://{{ openbao_ip }}:{{ openbao_port }}/v1/sys/init"
+    validate_certs: false
+  register: _init_status
+  until: _init_status.status == 200
+  retries: 5
+  delay: 3
+  changed_when: false
+
+- name: Check credentials file on controller
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/../outputs/openbao/openbao-credentials.yml"
+  register: _creds_file
+  delegate_to: localhost
+  become: false
+
+- name: Set init needed flag
+  ansible.builtin.set_fact:
+    _bao_needs_init: "{{ not _init_status.json.initialized }}"
+
+- name: Clean stale raft (initialized but no creds)
+  when: _init_status.json.initialized and not _creds_file.stat.exists
+  block:
+    - name: Stop bao
+      ansible.builtin.systemd:
+        name: bao
+        state: stopped
+
+    - name: Wipe raft storage
+      ansible.builtin.file:
+        path: "{{ openbao_raft_path }}"
+        state: absent
+
+    - name: Recreate raft directory
+      ansible.builtin.file:
+        path: "{{ openbao_raft_path }}"
+        state: directory
+        owner: "{{ openbao_user }}"
+        group: "{{ openbao_group }}"
+        mode: "0700"
+
+    - name: Start bao
+      ansible.builtin.systemd:
+        name: bao
+        state: started
+
+    - name: Wait for port after cleanup
+      ansible.builtin.wait_for:
+        host: "{{ openbao_ip }}"
+        port: "{{ openbao_port }}"
+        timeout: 30
+        state: started
+      changed_when: false
+
+    - name: Init now required
+      ansible.builtin.set_fact:
+        _bao_needs_init: true
+
+- name: Check bao binary exists
+  ansible.builtin.stat:
+    path: "{{ openbao_bin }}"
+  register: _bao_bin
+  when: _bao_needs_init
+
+- name: Fail if bao binary not found
+  ansible.builtin.fail:
+    msg: "OpenBao binary {{ openbao_bin }} not found. Check the install task."
+  when: _bao_needs_init and not _bao_bin.stat.exists
+
+- name: Initialize OpenBao
+  ansible.builtin.command:
+    cmd: "{{ openbao_bin }} operator init -key-shares={{ openbao_unseal_shares }} -key-threshold={{ openbao_unseal_threshold }} -format=json"
+  environment:
+    BAO_ADDR: "https://127.0.0.1:{{ openbao_port }}"
+    BAO_SKIP_VERIFY: "true"
+  register: _init_result
+  when: _bao_needs_init
+
+- name: Parse init result
+  ansible.builtin.set_fact:
+    _init_data: "{{ _init_result.stdout | from_json }}"
+  when: _init_result.changed
+  no_log: true
+
+- name: Validate init result JSON
+  ansible.builtin.assert:
+    that:
+      - _init_data.unseal_keys_b64 is defined
+      - _init_data.unseal_keys_b64 | length > 0
+      - _init_data.root_token is defined
+      - _init_data.root_token | length > 0
+    fail_msg: "Invalid init result: could not parse unseal_keys_b64 or root_token"
+  when: _init_result.changed
+
+- name: Set unseal keys (from init)
+  ansible.builtin.set_fact:
+    _unseal_keys: "{{ _init_data.unseal_keys_b64 }}"
+    _root_token: "{{ _init_data.root_token }}"
+  when: _init_result.changed
+  no_log: true
+
+- name: Create outputs directory
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}/../outputs/openbao"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+  when: _init_result.changed | default(false)
+
+- name: Save credentials to controller
+  ansible.builtin.copy:
+    content: |
+      ---
+      openbao_root_token: "{{ _root_token }}"
+      openbao_unseal_keys: {{ _unseal_keys | to_json }}
+    dest: "{{ playbook_dir }}/../outputs/openbao/openbao-credentials.yml"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  when: _init_result.changed | default(false)
+
+- name: Update unseal script credentials
+  ansible.builtin.copy:
+    content: |
+      OPENBAO_HOST="{{ openbao_ip }}"
+      OPENBAO_PORT="{{ openbao_port }}"
+      UNSEAL_THRESHOLD={{ openbao_unseal_threshold }}
+      UNSEAL_KEYS=({% for key in _unseal_keys %}
+        "{{ key }}"{% endfor %}
+      )
+    dest: "{{ playbook_dir }}/../../scripts/openbao-unseal/credentials.txt"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  when: _init_result.changed | default(false) and (_unseal_keys | length > 0)
+
+- name: Read saved credentials from controller (re-run)
+  ansible.builtin.slurp:
+    src: "{{ playbook_dir }}/../outputs/openbao/openbao-credentials.yml"
+  register: _saved_creds
+  delegate_to: localhost
+  become: false
+  when: not (_init_result.changed | default(false))
+  ignore_errors: true
+
+- name: Set unseal keys and root token (from saved file)
+  ansible.builtin.set_fact:
+    _unseal_keys: "{{ (_saved_creds.content | b64decode | from_yaml).openbao_unseal_keys }}"
+    _root_token: "{{ (_saved_creds.content | b64decode | from_yaml).openbao_root_token }}"
+  when:
+    - not (_init_result.changed | default(false))
+    - _saved_creds.content is defined
+  no_log: true
+
+- name: Ensure variables exist
+  ansible.builtin.set_fact:
+    _unseal_keys: "{{ _unseal_keys | default([]) }}"
+    _root_token: "{{ _root_token | default('') }}"
+  no_log: true
+
+- name: Fail if no keys
+  ansible.builtin.fail:
+    msg: "Credentials file outputs/openbao/openbao-credentials.yml not found. For first install, run the openbao.yml playbook."
+  when: _unseal_keys | length == 0
+
+- name: Check if sealed
+  ansible.builtin.command:
+    cmd: "{{ openbao_bin }} status -format=json"
+  environment:
+    BAO_ADDR: "https://127.0.0.1:{{ openbao_port }}"
+    BAO_SKIP_VERIFY: "true"
+  register: _seal_check
+  changed_when: false
+  failed_when: false
+
+- name: Unseal OpenBao
+  ansible.builtin.command:
+    cmd: "{{ openbao_bin }} operator unseal {{ item }}"
+  environment:
+    BAO_ADDR: "https://127.0.0.1:{{ openbao_port }}"
+    BAO_SKIP_VERIFY: "true"
+  loop: "{{ _unseal_keys[:openbao_unseal_threshold] }}"
+  when: (_seal_check.stdout | from_json).sealed
+  no_log: true
+  changed_when: false
+
+- name: Wait for unsealed
+  ansible.builtin.command:
+    cmd: "{{ openbao_bin }} status -format=json"
+  environment:
+    BAO_ADDR: "https://127.0.0.1:{{ openbao_port }}"
+    BAO_SKIP_VERIFY: "true"
+  register: _seal_status
+  until: not (_seal_status.stdout | from_json).sealed
+  retries: 15
+  delay: 5
+  changed_when: false
+  failed_when: false
+
+- name: Verify unsealed
+  ansible.builtin.assert:
+    that:
+      - not (_seal_status.stdout | from_json).sealed
+    fail_msg: "OpenBao could not be unsealed"
+    success_msg: "OpenBao is unsealed and ready"
+
+- name: Save unseal keys output
+  ansible.builtin.copy:
+    content: |-
+      ==========================================
+      OpenBao Unseal Keys & Root Token
+      ==========================================
+      Generated : {{ ansible_facts['date_time']['iso8601'] }}
+      Threshold : {{ openbao_unseal_threshold }} / {{ openbao_unseal_shares }}
+      Host      : {{ openbao_ip }}
+      Root Token: {{ _root_token }}
+      Unseal Keys:
+      {% for key in _unseal_keys %}
+        Key {{ loop.index }}: {{ key }}
+      {% endfor %}
+      ==========================================
+      WARNING: Store these in a secure location!
+    dest: "{{ playbook_dir }}/../outputs/openbao/openbao-unseal-keys.txt"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  when: _unseal_keys | length > 0
+
+- name: Create openbao config json
+  ansible.builtin.copy:
+    content: |
+      {
+        "host": "{{ openbao_ip }}",
+        "port": {{ openbao_port }},
+        "address": "https://{{ openbao_ip }}:{{ openbao_port }}",
+        "generated_at": "{{ ansible_facts.date_time.iso8601 }}",
+        "openbao_version": "{{ openbao_version }}"
+      }
+    dest: "{{ playbook_dir }}/../outputs/openbao/openbao-config.json"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  when: _unseal_keys | length > 0

@@ -1,0 +1,10 @@
+{# Generic Helm values iskeleti — chart'a özel mapping gerekmeyen chart'lar için.
+   deploy-chart per-chart values.yaml.j2 bulamazsa bu iskelete düşer.
+   Per-chart dinamik mapping (örn. grafana.adminPassword) gerekiyorsa
+   charted/<key>/templates/values.yaml.j2 yazılmalı; bu iskelet onu ezmez.
+   NOT: helm_values altına yazılan key'ler chart şemasına birebir gider;
+   yanlış key Helm tarafından sessizce yutulur. #}
+nameOverride: "{{ chart_cfg.release_name }}"
+{% if chart_cfg.helm_values | default({}) | length > 0 %}
+{{ chart_cfg.helm_values | to_nice_yaml }}
+{% endif %}

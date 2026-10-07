@@ -1,0 +1,8 @@
+---
+- name: Configure sysctl
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/99-k8s.conf
+    reload: true
+  loop: "{{ sysctl_settings }}"

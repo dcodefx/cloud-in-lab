@@ -1,0 +1,39 @@
+---
+- name: Generate self-signed TLS certificate
+  ansible.builtin.command:
+    cmd: >
+      openssl req -x509 -nodes -days 365 -newkey rsa:4096
+      -keyout "{{ openbao_tls_key }}"
+      -out "{{ openbao_tls_cert }}"
+      -subj "/CN={{ ansible_facts['fqdn'] }}/O=Homelab"
+      -addext "subjectAltName=IP:{{ ansible_facts['default_ipv4']['address'] }},DNS:{{ ansible_facts['fqdn'] }}"
+    creates: "{{ openbao_tls_cert }}"
+  register: _tls
+  notify: restart openbao
+
+- name: Set TLS certificate permissions
+  ansible.builtin.file:
+    path: "{{ item }}"
+    owner: "{{ openbao_user }}"
+    group: "{{ openbao_group }}"
+    mode: "0640"
+  loop:
+    - "{{ openbao_tls_cert }}"
+    - "{{ openbao_tls_key }}"
+
+- name: Deploy OpenBao config
+  ansible.builtin.template:
+    src: bao-config.hcl.j2
+    dest: "{{ openbao_config_dir }}/config.hcl"
+    owner: "{{ openbao_user }}"
+    group: "{{ openbao_group }}"
+    mode: "0640"
+  notify: restart openbao
+
+- name: Create audit log directory
+  ansible.builtin.file:
+    path: /var/log/bao
+    state: directory
+    owner: "{{ openbao_user }}"
+    group: "{{ openbao_group }}"
+    mode: "0750"

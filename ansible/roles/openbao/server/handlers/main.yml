@@ -1,0 +1,19 @@
+---
+- name: Restart openbao
+  ansible.builtin.systemd:
+    name: bao
+    state: restarted
+    daemon_reload: true
+  listen: "restart openbao"
+
+# Agent config/unit değiştiğinde yeniden başlatılır.
+# Sıralama: backup.yml'deki "Enable and start" task'ı daemon_reload ile yeni
+# unit'i zaten yükler (ilk kurulum dahil); handler play sonunda çalışıp config
+# değişikliğini uygular. flush_handlers GEREKMEZ — eklenirse start+restart
+# çift çalışır, zararsız ama gereksiz.
+- name: Restart bao raft snapshot agent
+  ansible.builtin.systemd:
+    name: bao-raft-agent
+    state: restarted
+    daemon_reload: true
+  listen: "restart bao-raft-agent"

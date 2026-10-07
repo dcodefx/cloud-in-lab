@@ -1,0 +1,26 @@
+# Backup/Restore Prometheus Alert Rules — GENERATED, DO NOT EDIT.
+# Owner: roles/maintenance -> monitoring.yml (kubectl apply through k8s-master-1).
+# Structure: wrapper (object) + group fragments. Fragment selection is
+# PROGRAMATIC — driven by the flags, not by file existence:
+#   backup  -> maintenance.backup.alerts_enabled
+#   restore -> maintenance.restore.enabled (fragment written the day restore is automated)
+# If both are off the render/apply task does not run (the groups would be empty,
+# which is invalid).
+# Prometheus Operator discovery: namespace + release label.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: maintenance
+  namespace: "{{ maintenance_prom_namespace }}"
+  labels:
+    release: "{{ maintenance_prom_release }}"
+    app.kubernetes.io/managed-by: maintenance
+    app.kubernetes.io/name: maintenance
+spec:
+  groups:
+{% if maintenance.backup.alerts_enabled | default(false) %}
+{% include "alerts/backup.yaml.j2" %}
+{% endif %}
+{% if maintenance.restore.enabled | default(false) %}
+{% include "alerts/restore.yaml.j2" %}
+{% endif %}

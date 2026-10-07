@@ -1,0 +1,397 @@
+---
+# OpenBao bootstrap — root token ile tek seferlik OpenBao tarafı kurulum.
+# Kullanım amacı: mount'lar (KV, approle, transit, db, pki, pki-int, kubernetes)
+# Bundan sonra operasyonel işler ops-admin ile
+# k8s/openbao-ops rolü üzerinden yapılır; root emekli (break-glass).
+#
+# Neden burası: sys/auth + sys/mounts create YALNIZCA root yapabilir. Karar:
+# ops-admin'e sys/auth / sys/mounts create asla verilmez.
+#
+# Tek kaynak: k8s/openbao-ops/defaults/main.yml (engine sabitleri) + rbac.yml
+# include edilir; kopyalama/dupe yok.
+#
+# Sıralama (init.yml'den sonra çalışır — _root_token init'te set edilmiş olur).
+
+- name: Load openbao security defaults (engine constants + workload catalog — single source of truth)
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../roles/openbao/security/defaults/main.yml"
+
+- name: Set openbao_address for bootstrap API calls
+  ansible.builtin.set_fact:
+    openbao_address: "https://{{ openbao_ip }}:{{ openbao_port }}"
+  changed_when: false
+
+- name: Use root token for bootstrap
+  ansible.builtin.set_fact:
+    bao_token: "{{ _root_token }}"
+  no_log: true
+
+# ============================================
+# Mount'lar (root-only: sys/auth + sys/mounts create)
+# ============================================
+
+- name: Enable KV v2 secrets engine
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/sys/mounts/{{ openbao_kv_mount }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      type: kv-v2
+      config:
+        max_versions: 10
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+  register: _kv_mount
+  failed_when:
+    - _kv_mount.status not in [200, 204]
+    - '"path is already in use" not in (_kv_mount.json | default({})) | string'
+  changed_when: _kv_mount.status == 200
+
+- name: Enable AppRole auth method
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/sys/auth/{{ openbao_approle_mount }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      type: approle
+      description: "AppRole auth for K8s CSI driver"
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+  register: _approle_mount
+  failed_when:
+    - _approle_mount.status not in [200, 204]
+    - '"path is already in use" not in (_approle_mount.json | default({})) | string'
+  changed_when: _approle_mount.status == 200
+
+- name: Enable transit secrets engine
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/sys/mounts/{{ openbao_transit_mount }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      type: transit
+      description: "Envelope/KMS demo"
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+  register: _transit_mount
+  failed_when:
+    - _transit_mount.status not in [200, 204]
+    - '"path is already in use" not in (_transit_mount.json | default({})) | string'
+  changed_when: _transit_mount.status == 200
+
+- name: Enable database secrets engine
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/sys/mounts/{{ openbao_dynamic_engine_mount }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      type: database
+      description: "Dynamic database credentials"
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+  register: _db_mount
+  failed_when:
+    - _db_mount.status not in [200, 204]
+    - '"path is already in use" not in (_db_mount.json | default({})) | string'
+  changed_when: _db_mount.status == 200
+
+- name: Enable PKI engine (Root CA)
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/sys/mounts/{{ openbao_pki_mount }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      type: pki
+      config:
+        max_lease_ttl: "{{ openbao_pki_root_ca_ttl }}"
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+  register: _pki_mount
+  failed_when:
+    - _pki_mount.status not in [200, 204]
+    - '"path is already in use" not in (_pki_mount.json | default({})) | string'
+  changed_when: _pki_mount.status == 200
+
+- name: Enable PKI engine (Intermediate CA)
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/sys/mounts/{{ openbao_pki_int_mount }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      type: pki
+      config:
+        max_lease_ttl: "{{ openbao_pki_int_ca_ttl }}"
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+  register: _pki_int_mount
+  failed_when:
+    - _pki_int_mount.status not in [200, 204]
+    - '"path is already in use" not in (_pki_int_mount.json | default({})) | string'
+  changed_when: _pki_int_mount.status == 200
+
+- name: Enable Kubernetes auth method (mount only — config/role on the K8s side)
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/sys/auth/{{ openbao_k8s_auth_mount }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      type: kubernetes
+      description: "K8s SA-JWT auth for CSI provider"
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+  register: _k8s_auth_mount
+  failed_when:
+    - _k8s_auth_mount.status not in [200, 204]
+    - '"path is already in use" not in (_k8s_auth_mount.json | default({})) | string'
+  changed_when: _k8s_auth_mount.status == 200
+
+# ============================================
+# k8s-app policy — Kubernetes auth accessor ile template rendering
+# Policy, pod'un SA adını OpenBao identity alias metadata'sından okuyarak
+# secret/data/{sa_name}-approle path'ine kısıtlar (scope-bazlı izolasyon).
+# ============================================
+
+- name: Get Kubernetes auth mount accessor
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/sys/auth"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    validate_certs: false
+    status_code: 200
+  register: _auth_list
+
+- name: Set Kubernetes auth accessor fact
+  ansible.builtin.set_fact:
+    k8s_auth_accessor: "{{ _auth_list.json['kubernetes/'].accessor }}"
+
+- name: Create k8s-app policy (templated — SA-based scope isolation)
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/sys/policies/acl/k8s-app"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      policy: "{{ lookup('template', playbook_dir + '/../roles/openbao/security/templates/k8s-app-templated.hcl.j2') }}"
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+  vars:
+    k8s_auth_accessor: "{{ k8s_auth_accessor }}"
+  changed_when: true
+
+# ============================================
+# İçerik (root) — AppRole policy/role + PKI + DB
+# transit key/role artık bootstrap'te değil; app-deploy §7 self-service ile
+# (openbao_key, app config'inden — plan A).
+# ============================================
+
+- name: Create AppRole policies
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/sys/policies/acl/{{ item.name }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      policy: |
+        {% for p in item.paths %}
+        path "{{ p.path }}" {
+          capabilities = {{ p.caps | to_json }}
+        {% for key, val in (p.denied_parameters | default({})).items() %}
+          denied_parameters {
+            {{ key }} = {{ val | to_json }}
+          }
+        {% endfor %}
+        }
+        {% endfor %}
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+  loop: "{{ openbao_approle_policies }}"
+  changed_when: true
+
+- name: Create AppRole roles
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/auth/{{ openbao_approle_mount }}/role/{{ item.role_name }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      policies: "{{ item.policies }}"
+      token_ttl: "{{ item.token_ttl | default('1h') }}"
+      token_max_ttl: "{{ item.token_max_ttl | default('24h') }}"
+      token_num_uses: "{{ item.token_num_uses | default(0) }}"
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+  loop: "{{ openbao_approle_roles }}"
+  changed_when: true
+
+- name: Store initial static secrets
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/{{ openbao_kv_mount }}/data/{{ item.path }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      data: "{{ item.data }}"
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+  loop: "{{ openbao_static_secrets }}"
+  changed_when: false
+
+# Set PKI domain from nested structure (openbao-ops/main.yml deseni)
+- name: Set PKI domain from nested openbao.pki
+  ansible.builtin.set_fact:
+    openbao_pki_domain: "{{ openbao_pki.domain | default(openbao_pki_domain) }}"
+  changed_when: false
+
+- name: Check if Root CA exists
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/{{ openbao_pki_mount }}/cert/ca"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    validate_certs: false
+    status_code: [200, 404, 400]
+  register: _pki_root_ca
+  failed_when: _pki_root_ca.status not in [200, 404, 400]
+
+- name: Generate Root CA
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/{{ openbao_pki_mount }}/root/generate/internal"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      common_name: "{{ openbao_pki_domain }} Root CA"
+      ttl: "{{ openbao_pki_root_ca_ttl }}"
+      key_type: ec
+      key_bits: 384
+    body_format: json
+    validate_certs: false
+    status_code: 200
+  register: _pki_root_gen
+  when: _pki_root_ca.status != 200
+
+- name: Check if Intermediate CA exists
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/{{ openbao_pki_int_mount }}/cert/ca"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    validate_certs: false
+    status_code: [200, 404, 400]
+  register: _pki_int_ca
+  failed_when: _pki_int_ca.status not in [200, 404, 400]
+
+- name: Generate Intermediate CSR
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/{{ openbao_pki_int_mount }}/intermediate/generate/internal"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      common_name: "{{ openbao_pki_domain }} Intermediate CA"
+      key_type: ec
+      key_bits: 384
+    body_format: json
+    validate_certs: false
+    status_code: 200
+  register: _pki_int_csr
+  when: _pki_int_ca.status != 200
+
+- name: Sign Intermediate CSR with Root CA
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/{{ openbao_pki_mount }}/root/sign-intermediate"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      csr: "{{ _pki_int_csr.json.data.csr }}"
+      common_name: "{{ openbao_pki_domain }} Intermediate CA"
+      ttl: "{{ openbao_pki_int_ca_ttl }}"
+    body_format: json
+    validate_certs: false
+    status_code: 200
+  register: _pki_int_signed
+  when: _pki_int_ca.status != 200
+
+- name: Import signed Intermediate CA
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/{{ openbao_pki_int_mount }}/intermediate/set-signed"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      certificate: "{{ _pki_int_signed.json.data.certificate }}"
+    body_format: json
+    validate_certs: false
+    status_code: 200
+  register: _pki_int_import
+  when: _pki_int_ca.status != 200
+
+- name: Create PKI role
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/{{ openbao_pki_int_mount }}/roles/{{ openbao_pki_role }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_token }}"
+    body:
+      allow_any_name: false
+      allowed_domains: ["{{ openbao_pki_domain }}"]
+      allow_subdomains: true
+      allow_wildcard_certificates: true
+      require_cn: false
+      max_ttl: "{{ openbao_pki_cert_ttl }}"
+      key_type: ec
+      key_bits: 384
+    body_format: json
+    validate_certs: false
+    status_code: [200, 204]
+
+# ============================================
+# Platform RBAC + workload policies + openbao-mount.json
+# rbac-platform.yml sonunda bao_token root → ops-admin olur; kalan işler ops-admin ile.
+# ============================================
+- name: Include platform RBAC (P1–P6 + ops-admin/pki-manager json)
+  ansible.builtin.include_tasks:
+    file: "{{ playbook_dir }}/../roles/openbao/security/tasks/rbac-platform.yml"
+
+- name: Include workload RBAC (profile = role, ops-admin token)
+  ansible.builtin.include_tasks:
+    file: "{{ playbook_dir }}/../roles/openbao/security/tasks/rbac-workload.yml"
+
+- name: Create openbao mount json (bridge for readers — produced on the OpenBao side)
+  ansible.builtin.copy:
+    content: |
+      {
+        "approle_mount": "{{ openbao_approle_mount }}",
+        "transit_mount": "{{ openbao_transit_mount }}",
+        "pki_mount": "{{ openbao_pki_mount }}",
+        "pki_int_mount": "{{ openbao_pki_int_mount }}",
+        "kv_mount": "{{ openbao_kv_mount }}",
+        "address": "{{ openbao_address }}",
+        "generated_at": "{{ ansible_date_time.iso8601 }}",
+        "openbao_version": "{{ openbao_version }}"
+      }
+    dest: "{{ playbook_dir }}/../outputs/openbao/openbao-mount.json"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  no_log: true

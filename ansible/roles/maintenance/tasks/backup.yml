@@ -1,0 +1,34 @@
+---
+# Order matters:
+#   tree-sync -> dependencies  the script needs etcdctl to run, and the
+#                                unit must not start before the binary exists
+#   garage-provision -> job-env       the key file must exist before it is read
+#   job-env -> encrypt-creds          the .env values are sealed into the credential
+#   encrypt-creds -> restic-repo      the repo task decrypts what encrypt-creds wrote
+#   systemd-units -> monitoring       a unit is only started once its package is installed
+- name: Include tree sync + directories
+  ansible.builtin.include_tasks: tree-sync.yml
+
+- name: Include job dependencies (etcdctl)
+  ansible.builtin.include_tasks: dependencies.yml
+
+- name: Include restic setup + password distribution
+  ansible.builtin.include_tasks: restic.yml
+
+- name: Include Garage2 provision (bucket + access key)
+  ansible.builtin.include_tasks: garage-provision.yml
+
+- name: Include job env generation
+  ansible.builtin.include_tasks: job-env.yml
+
+- name: Include secret encryption (systemd-creds)
+  ansible.builtin.include_tasks: encrypt-creds.yml
+
+- name: Include restic repo init (credential decrypted)
+  ansible.builtin.include_tasks: restic-repo.yml
+
+- name: Include systemd units + timers
+  ansible.builtin.include_tasks: systemd-units.yml
+
+- name: Include monitoring (exporter + alerts)
+  ansible.builtin.include_tasks: monitoring.yml

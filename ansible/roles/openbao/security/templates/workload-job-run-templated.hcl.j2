@@ -1,0 +1,27 @@
+# W4 job-run: B0+self-care + B1+kv-read + B4+transit-use (kısa ömürlü job)
+# Token renewable=false, 30m TTL. KV read-only, transit encrypt/decrypt.
+
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "secret/data/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}/*" {
+  capabilities = ["read"]
+}
+path "secret/metadata/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}/*" {
+  capabilities = ["list", "read"]
+}
+path "transit/encrypt/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}-*" {
+  capabilities = ["update"]
+}
+path "transit/decrypt/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}-*" {
+  capabilities = ["update"]
+}
+path "transit/rewrap/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}-*" {
+  capabilities = ["update"]
+}
+path "transit/datakey/plaintext/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}-*" {
+  capabilities = ["update"]
+}
+path "transit/keys/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}-*" {
+  capabilities = ["read"]
+}

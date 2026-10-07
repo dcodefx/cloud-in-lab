@@ -1,0 +1,23 @@
+# External node-exporter ServiceMonitor — GENERATED, DO NOT EDIT.
+# Owner: roles/maintenance -> monitoring.yml (kubectl apply, k8s-master-1).
+# Discovery: kube-prom-stack serviceMonitorSelector {} -> no label requirement,
+# but the release label is still written for consistency with the PrometheusRule pattern.
+# jobLabel empty -> job = Service name (operator docs): up{job="external-node-exporter"}.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: external-node-exporter
+  namespace: "{{ maintenance_prom_namespace }}"
+  labels:
+    release: "{{ maintenance_prom_release }}"
+    app.kubernetes.io/name: external-node-exporter
+    app.kubernetes.io/managed-by: maintenance
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: external-node-exporter
+  namespaceSelector:
+    matchNames:
+      - "{{ maintenance_prom_namespace }}"
+  endpoints:
+    - port: http-metrics

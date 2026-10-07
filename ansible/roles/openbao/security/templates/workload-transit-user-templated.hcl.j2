@@ -1,0 +1,21 @@
+# W5 transit-user: B0+self-care + B4+transit-use (KV yok, en dar job)
+# Token renewable=false, 30m TTL. Sadece transit.
+
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "transit/encrypt/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}-*" {
+  capabilities = ["update"]
+}
+path "transit/decrypt/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}-*" {
+  capabilities = ["update"]
+}
+path "transit/rewrap/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}-*" {
+  capabilities = ["update"]
+}
+path "transit/datakey/plaintext/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}-*" {
+  capabilities = ["update"]
+}
+path "transit/keys/{{ '{{' }}identity.entity.aliases.{{ approle_accessor }}.metadata.scope{{ '}}' }}-*" {
+  capabilities = ["read"]
+}

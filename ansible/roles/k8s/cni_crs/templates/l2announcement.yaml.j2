@@ -1,0 +1,9 @@
+apiVersion: cilium.io/v2alpha1
+kind: CiliumL2AnnouncementPolicy
+metadata:
+  name: {{ cluster_name }}-l2
+spec:
+  interfaces:
+    - "{{ cilium_l2_interface }}"
+  externalIPs: true
+  loadBalancerIPs: true

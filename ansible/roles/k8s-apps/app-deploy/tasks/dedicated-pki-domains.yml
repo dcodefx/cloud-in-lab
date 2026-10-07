@@ -1,0 +1,193 @@
+---
+# Bu dosya k8s_apps.yml'in KENDİ otomatik ön-adımıdır — ayrı bir rol veya
+# manuel tetikleme DEĞİLDİR. dedicated (base_domain dışı) domain'ler için
+# PKI role + ClusterIssuer'ı tek seferde (unique) oluşturur; k8s/infra
+# rolünün cluster-issuer.yml'i buraya eklenmez.
+
+- name: Load openbao mount config
+  ansible.builtin.slurp:
+    src: "{{ playbook_dir }}/../outputs/openbao/openbao-mount.json"
+  register: _bao_mount
+  delegate_to: localhost
+  become: false
+
+- name: Fail if openbao mount config not found
+  ansible.builtin.fail:
+    msg: >-
+      outputs/openbao/openbao-mount.json not found — run 'playbooks/openbao.yml' first
+      
+  when: _bao_mount is failed
+
+- name: Set openbao mount vars from config
+  ansible.builtin.set_fact:
+    openbao_approle_mount_from_config: "{{ (_bao_mount.content | b64decode | from_json).approle_mount }}"
+    openbao_pki_int_mount_from_config: "{{ (_bao_mount.content | b64decode | from_json).pki_int_mount }}"
+  no_log: true
+
+- name: Load pki-manager credentials
+  ansible.builtin.slurp:
+    src: "{{ playbook_dir }}/../outputs/openbao/pki-manager.json"
+  register: _k8s_apps_creds
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: apps is defined and apps | length > 0
+
+- name: Fail if pki-manager credentials not found
+  ansible.builtin.fail:
+    msg: >-
+      outputs/openbao/pki-manager.json not found — openbao.yml
+      (openbao-ops rbac-platform) may not have been run.
+  when: apps is defined and apps | length > 0 and (_k8s_apps_creds is not defined or _k8s_apps_creds is failed)
+
+- name: Parse pki-manager credentials
+  ansible.builtin.set_fact:
+    k8s_apps_role_id: "{{ (_k8s_apps_creds.content | b64decode | from_json).role_id }}"
+    k8s_apps_secret_id: "{{ (_k8s_apps_creds.content | b64decode | from_json).secret_id }}"
+  no_log: true
+  when: _k8s_apps_creds is defined
+
+- name: Login to OpenBao with AppRole
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/auth/{{ openbao_approle_mount_from_config }}/login"
+    method: POST
+    body_format: json
+    body:
+      role_id: "{{ k8s_apps_role_id }}"
+      secret_id: "{{ k8s_apps_secret_id }}"
+    return_content: true
+    validate_certs: false
+  register: _bao_login
+  when: k8s_apps_role_id is defined
+  no_log: true
+
+- name: Set OpenBao client token
+  ansible.builtin.set_fact:
+    bao_client_token: "{{ _bao_login.json.auth.client_token }}"
+  when: _bao_login is defined and _bao_login.status == 200
+
+- name: Fail if OpenBao AppRole login failed
+  ansible.builtin.fail:
+    msg: >-
+      pki-manager AppRole login failed or token could not be obtained.
+      openbao.yml (openbao-ops rbac-platform) may not have been run.
+  when: apps is defined and apps | length > 0 and (bao_client_token is not defined or bao_client_token | length == 0)
+
+- name: Collect dedicated domains from apps
+  ansible.builtin.set_fact:
+    _dedicated_domains_raw: >-
+      {{ apps | selectattr('enable','equalto',true)
+         | selectattr('tls','defined')
+         | selectattr('tls.mode','equalto','dedicated')
+         | selectattr('use_base_domain','defined')
+         | rejectattr('use_base_domain','equalto',true)
+         | map(attribute='hostnames')
+         | list }}
+  when: bao_client_token is defined
+
+- name: Build unique domain list (hostname -> domain, first label stripped)
+  ansible.builtin.set_fact:
+    _dedicated_domains: "{{ _dedicated_domains | default([]) + [item | regex_replace('^[^.]+\\.', '')] }}"
+  loop: "{{ _dedicated_domains_raw | flatten }}"
+  when: bao_client_token is defined
+
+- name: Deduplicate domains
+  ansible.builtin.set_fact:
+    dedicated_domains: "{{ _dedicated_domains | default([]) | unique }}"
+  when: bao_client_token is defined
+
+- name: Set pki int mount alias (for ClusterIssuer template)
+  ansible.builtin.set_fact:
+    openbao_pki_int_mount: "{{ openbao_pki_int_mount_from_config }}"
+  when: bao_client_token is defined and dedicated_domains | length > 0
+
+- name: Read cert-manager AppRole role_id (ClusterIssuer auth)
+  ansible.builtin.shell: |
+    kubectl -n cert-manager get secret cert-manager-approle -o jsonpath='{.data.role_id}' | base64 -d
+  register: _cm_role_id
+  changed_when: false
+  failed_when: false
+  when: bao_client_token is defined and dedicated_domains | length > 0
+
+- name: Fail if cert-manager-approle Secret missing or empty
+  ansible.builtin.fail:
+    msg: >-
+      cert-manager-approle Secret (cert-manager ns) not found or empty —
+      openbao.yml (openbao-ops) 
+  when: bao_client_token is defined and dedicated_domains | length > 0 and (_cm_role_id.rc != 0 or (_cm_role_id.stdout | default('')) | trim | length == 0)
+
+- name: Set cert_manager_role_id fact
+  ansible.builtin.set_fact:
+    cert_manager_role_id: "{{ _cm_role_id.stdout }}"
+  when: bao_client_token is defined and dedicated_domains | length > 0
+
+- name: Read OpenBao TLS CA (ClusterIssuer caBundle)
+  ansible.builtin.shell: |
+    kubectl -n kube-system get secret openbao-ca-tls -o jsonpath='{.data.ca\.crt}' | base64 -d
+  register: _openbao_ca
+  changed_when: false
+  failed_when: false
+  when: bao_client_token is defined and dedicated_domains | length > 0
+
+- name: Fail if openbao-ca-tls Secret missing or empty
+  ansible.builtin.fail:
+    msg: >-
+      openbao-ca-tls Secret (kube-system) not found or empty —
+      once 'playbooks/k8s.yml' (CSI) 
+  when: bao_client_token is defined and dedicated_domains | length > 0 and (_openbao_ca.rc != 0 or (_openbao_ca.stdout | default('')) | trim | length == 0)
+
+- name: Set ca_bundle fact (base64, for ClusterIssuer)
+  ansible.builtin.set_fact:
+    _ca_bundle: "{{ _openbao_ca.stdout | b64encode }}"
+  when: bao_client_token is defined and dedicated_domains | length > 0
+
+- name: Ensure PKI role exists for each dedicated domain
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/{{ openbao_pki_int_mount_from_config }}/roles/dedicated-{{ item | replace('.', '-') }}"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ bao_client_token }}"
+    status_code: [200, 404]
+    validate_certs: false
+  loop: "{{ dedicated_domains | default([]) }}"
+  register: _pki_role_checks
+  when: bao_client_token is defined
+
+- name: Create/update PKI role for each dedicated domain (if missing or key_type is rsa/incomplete)
+  ansible.builtin.uri:
+    url: "{{ openbao_address }}/v1/{{ openbao_pki_int_mount_from_config }}/roles/dedicated-{{ item.item | replace('.', '-') }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ bao_client_token }}"
+    body_format: json
+    body:
+      allowed_domains: "{{ item.item }}"
+      allow_subdomains: true
+      enforce_hostnames: true
+      max_ttl: "2160h"
+      key_type: ec
+      key_bits: 384
+      require_cn: false
+    validate_certs: false
+    status_code: 200
+  when:
+    - bao_client_token is defined
+    - item.status == 404
+      or ((item.json.data | default({})).key_type | default('')) != 'ec'
+      or ((item.json.data | default({})).require_cn | default(true)) != false
+  loop: "{{ _pki_role_checks.results }}"
+
+- name: Create ClusterIssuer for each dedicated domain
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../roles/k8s-apps/common/templates/cluster-issuer-dedicated.yaml.j2"
+    dest: "/tmp/clusterissuer-{{ item | replace('.', '-') }}.yaml"
+  vars:
+    app_domain_slug: "{{ item | replace('.', '-') }}"
+    app_domain: "{{ item }}"
+  when: bao_client_token is defined
+  loop: "{{ dedicated_domains | default([]) }}"
+
+- name: Apply ClusterIssuer (idempotent kubectl apply)
+  ansible.builtin.shell: kubectl apply -f /tmp/clusterissuer-{{ item | replace('.', '-') }}.yaml
+  when: bao_client_token is defined
+  loop: "{{ dedicated_domains | default([]) }}"
