@@ -504,7 +504,7 @@ Root CA sertifikası istenirse yerel controller cihaza da kopyalanarak tarayıc�
 | `openbao-unseal-keys.txt` | Unseal özeti | `0600` | init |
 | `openbao-config.json` | Sunucu adresi ve sürüm | `0600` | init |
 | `openbao-mount.json` | Mount isimleri ve adres köprüsü | `0600` | bootstrap |
-| `profile-role-ids.json` | Yedi workload profilinin statik `role_id` haritası | `0644` | workload RBAC |
+| `profile-role-ids.json` | Sekiz workload profilinin statik `role_id` haritası | `0644` | workload RBAC |
 | `ops-admin.json`, `pki-manager.json`, `monitor.json` | Platform credential'ları | `0600` | platform RBAC |
 | `<scope>-approle.json` | Uygulama credential'ı (`role_id` + `secret_id`) | `0600` | app deploy |
 

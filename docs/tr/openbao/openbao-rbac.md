@@ -17,7 +17,6 @@
   - [8. Gözlemlenebilirlik](#8-gözlemlenebilirlik)
   - [9. Conformance Test Standardı](#9-conformance-test-standardı)
   - [10. Dosya Haritası ve Sahiplik](#10-dosya-haritası-ve-sahiplik)
-  - [11. Bilinçli Sınırlar](#11-bilinçli-sınırlar)
 </details>
 
 ---
