@@ -1,0 +1,42 @@
+# OpenTofu State Dosyalari
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Encryption Key
+secrets/*.key
+secrets/*.pem
+
+# TFVars (sensitive)
+*.tfvars
+!*.tfvars.example
+common.tfvars
+
+# Backend configs (generated)
+backends/*.tfbackend
+backends/.backup/
+
+# Gecici dosyalar
+.tmp/
+*.tmp
+*.bak
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Ansible
+ansible/inventory/*
+!ansible/inventory/.gitkeep
+ansible/*.retry
+
+# Garage
+garage-data/

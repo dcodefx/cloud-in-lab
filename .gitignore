@@ -1,0 +1,59 @@
+# tofu-lar - Ana .gitignore
+
+# Ansible generated inventory
+ansible/inventory/*.generated
+ansible/inventory/*.ini.generated
+!ansible/inventory/.gitkeep
+
+# Ansible generated outputs (kube.conf, OpenBao keys, etc.)
+ansible/outputs/
+ansible/playbooks/outputs/
+
+# Ansible retry
+*.retry
+
+# Vault password
+.vault_pass
+
+# Private keys
+*.pem
+*.key
+id_*
+!*.pub
+
+# Tofu backend credentials (contains access_key/secret_key)
+tofu/backends/*.backend.tfbackend
+
+# Tofu tfvars (contains proxmox_token)
+tofu/environments/*/common.tfvars
+
+# Credential files
+scripts/garage-*-credentials.txt
+
+# OpenBao unseal keys
+scripts/openbao-unseal/credentials.txt
+
+# Temporary files
+*.tmp
+*.bak
+*~
+.DS_Store
+Thumbs.db
+
+# Maintenance backup freshness state
+maintenance/.state/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.pyc
+*.bak
+scripts/proxmox/pve-discovered.txt
+scripts/proxmox/pve-token.txt
+opencode_recovery.json.bak.*
+*.bak.*
