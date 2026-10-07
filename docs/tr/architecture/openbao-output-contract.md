@@ -68,7 +68,9 @@ OpenBao server bootstrap aşamasında `roles/openbao/server/tasks/bootstrap.yml`
 
 Dosyalar `0600` izniyle ve `no_log: true` ile yazılır. Tüketimleri:
 
-- `ops-admin.json` — operasyonel roller (openbao-ops) her koşuda bu dosyadan login yapar; root token bu rol içinde asla kullanılmaz (madde 3).
+
+- `ops-admin.json` — operasyonel roller (openbao-ops) her koşuda bu dosyadan login yapar; root token bu rol içinde asla kullanılmaz (openbao-rbac.md §6.2).
+
 - `pki-manager.json` — dedicated-PKI rol yönetimi (openbao-rbac.md §3, P2) okuyucusu.
 - `monitor.json` — Prometheus/telemetri okuma profili.
 - `bao-raft-agent.json` — `roles/openbao/server/tasks/backup.yml` bu çifti

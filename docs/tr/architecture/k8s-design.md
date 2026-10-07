@@ -259,7 +259,7 @@ Aynı kümede dört farklı “kural” tipi vardır; **karıştırılmamaları*
 **Neden hem CCNP hem KCNP?**
 
 1. **CCNP** = platformun günlük güvenlik yüzeyi (deny-all + ~15 allow). Namespace’inde policy yazabilen herkesin mantığı Cilium CRD’siyle ifade edilir.
-2. **KCNP (Admin tier)** = tenant’ın kendi ns’inde yazdığı allow’ların **egeremeyeceği** üst kural. Cloud instance metadata endpoint’i gibi “asla açık kalmamalı” hedefler Admin tier’a konur; daha yüksek priority ile ns içi allow’lar ezilir.
+2. **KCNP (Admin tier)** = tenant’ın kendi ns’inde yazdığı allow’ların **eğemeyeceği** üst kural. Cloud instance metadata endpoint’i gibi “asla açık kalmamalı” hedefler Admin tier’a konur; daha yüksek priority ile ns içi allow’lar ezilir.
 3. Bu iki katman **farklı API’ler**: CCNP Cilium’a özgüdür; KCNP upstream Network Policy API denemesidir — o yüzden **v1alpha2 / deneysel** etiketi taşır ve kapsamı bilerek dar tutulur (tek policy: metadata-deny). Production’a yayılan K8s sürümü olgunlaştıkça KCNP yüzeyi genişletilebilir; genişletilmeden önce §8.1’deki CRD pin’i ile birlikte değerlendirilir.
 
 **Özet sıra:** `HTTPRoute` yol tarifesi → `CCNP` kapıyı açar/kapar → `KCNP` Admin tier’la asla açılmaması gerekeni kilitler → app pod’u PSA + dynamic secret ile korunur (§4).
