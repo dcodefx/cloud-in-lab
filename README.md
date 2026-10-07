@@ -386,10 +386,10 @@ Full documentation is currently in Turkish under `docs/tr/`; English translation
 | Area | Documents | EN | TR |
 |------|-----------|----|----|
 | **Getting started** | [platform-handbook.md](docs/en/platform-handbook.md) (main guide) · [quick-start.md](docs/en/quick-start.md) (from-scratch setup) | ✅ | ✅ |
-| **Architecture** | [master-design.md](docs/en/architecture/master-design.md) · [k8s-design.md](docs/en/architecture/k8s-design.md) · [k8s-apps-design.md](docs/en/architecture/k8s-apps-design.md)  · [project-constraints-and-solutions.md](docs/en/architecture/project-constraints-and-solutions.md) · [openbao-output-contract.md](docs/en/architecture/openbao-output-contract.md)  | 🚧 | ✅ |
-| **OpenBao & security** | [openbao-architecture-guide.md](docs/en/openbao/openbao-architecture-guide.md) · [openbao-rbac.md](docs/en/openbao/openbao-rbac.md) · [openbao-tests.md](docs/en/openbao/openbao-tests.md) · [rbac.md](docs/en/kubernetes/rbac.md) | 🚧 | ✅ |
+| **Architecture** | [master-design.md](docs/en/architecture/master-design.md) · [k8s-design.md](docs/en/architecture/k8s-design.md) · [k8s-apps-design.md](docs/en/architecture/k8s-apps-design.md)  · [project-constraints-and-solutions.md](docs/en/architecture/project-constraints-and-solutions.md) · [openbao-output-contract.md](docs/en/architecture/openbao-output-contract.md)  | ✅ | ✅ |
+| **OpenBao & security** | [openbao-architecture-guide.md](docs/en/openbao/openbao-architecture-guide.md) · [openbao-rbac.md](docs/en/openbao/openbao-rbac.md) · [openbao-tests.md](docs/en/openbao/openbao-tests.md) · [k8s-rbac.md](docs/en/kubernetes/rbac.md) | ✅ | ✅ |
 | **Maintenance & DR** | [maintenance.md](docs/en/maintenance/maintenance.md) · [disaster-recovery.md](docs/en/maintenance/disaster-recovery.md) · [restore-sh-how-it-works.md](docs/en/maintenance/restore-sh-how-it-works.md) | 🚧 | ✅ |
-| **Garage & Proxmox** | [chef-sh-how-it-works.md](docs/en/garagehq/chef-sh-how-it-works.md) · [proxmox-preps.md](docs/en/proxmox/proxmox-preps.md) · [how-to-create-vm-template.md](docs/en/proxmox/how-to-create-vm-template.md) | 🚧 | ✅ |
+| **Garage & Proxmox** | [chef-sh-how-it-works.md](docs/en/garagehq/chef-sh-how-it-works.md) · [proxmox-preps.md](docs/en/proxmox/proxmox-preps.md) · [how-to-create-vm-template.md](docs/en/proxmox/how-to-create-vm-template.md) | ✅ | ✅ |
 | **Emulators** | [floci-test-commands.md](docs/en/emulators/floci-test-commands.md) · [laws-test-commands.md](docs/en/emulators/laws-test-commands.md) | ✅ | ✅ |
 | **Other** | [cloud-equivalents.md](docs/en/cloud-equivalents.md) · [policy-examples/](extra-samples/policy-examples/) · [openbao-auto-unseal/](extra-samples/openbao-auto-unseal/) | 🚧 | ✅ |
 
